@@ -31,7 +31,6 @@ class Game:
                 continue
         for i,j in self.player.items():
             print(f"{i} : {j}")        
-        #print(f"스테이터스\n{self.player}")
 
 if __name__ == "__main__":
     Game()
