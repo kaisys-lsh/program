@@ -110,9 +110,14 @@ def ds_wheel1_path(dt: datetime, car_no: str):
 def save_bgr_image_to_file(bgr, out_path: str) -> bool:
     if bgr is None:
         return False
-    ensure_dir(os.path.dirname(out_path))
+
+    dirpath = os.path.dirname(out_path)
+    if dirpath:
+        ensure_dir(dirpath)
+
     try:
         ok = cv2.imwrite(out_path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
         return bool(ok)
     except Exception:
         return False
+
