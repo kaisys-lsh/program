@@ -1,3 +1,4 @@
+#main.py
 import os
 import sys
 import subprocess
@@ -666,7 +667,7 @@ class MainWindow(QMainWindow):
         for w in [
             self.zmq_thread,
             self.rtspA1, self.rtspB1, self.rtspA2, self.rtspB2,
-            self.rtspC1,
+            #self.rtspC1,
             self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2
         ]:
             try:
