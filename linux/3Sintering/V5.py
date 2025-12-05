@@ -149,6 +149,7 @@ def main():
     wagon_start_ts = None
     frame_candidates = []   # ← 프레임 단위에서 추출한 3자리 번호만 저장
 
+
     try:
         while True:
 
@@ -172,6 +173,7 @@ def main():
                 continue
 
             now = time.time()
+            img = cv2.resize(img, (960, 540))
 
             # Detectron 추론
             with torch.inference_mode():
