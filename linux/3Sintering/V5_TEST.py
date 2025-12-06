@@ -1,5 +1,5 @@
-# sender_rtsp_push_vote.py
-import os, time, cv2, zmq, torch, gc
+# sender_folder_push_vote.py
+import os, time, cv2, zmq, torch, gc, glob, re
 import numpy as np
 from datetime import datetime
 from collections import Counter
@@ -13,21 +13,28 @@ from detectron2.structures import Instances, Boxes
 # ─────────────────────────────────────────────
 # [환경설정]
 # ─────────────────────────────────────────────
-RTSP_URL      = "http://127.0.0.1:8000/video"
+# RTSP 대신 폴더 이미지 사용
+IMAGE_DIR     = "/workspace/image"   # ← 여기에 이미지 폴더 경로 넣기
 FPS           = 10
 JPEG_QUALITY  = 80
 
 CFG_PATH      = "/workspace/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
 WEIGHTS_PATH  = "/workspace/linux/3Sintering/대차인식WS_V1.pth"
 
-PUSH_BIND     = "tcp://*:5577"
+PUSH_BIND     = "tcp://*:5577"  # HMI용 ZMQ 포트 (기존 그대로)
+
 EMPTY_CODE_OK = True
-
-RECONNECT_WAIT_SEC = 2.0
-USE_FFMPEG         = True
-DROP_OLD_FRAMES    = True
-
 WAGON_WINDOW_SEC   = 3.0
+
+# ─────────────────────────────────────────────
+# 유틸: 이미지 파일 정렬용 (이름에 들어 있는 숫자 기준)
+# ─────────────────────────────────────────────
+def numeric_sort_key(path):
+    name = os.path.basename(path)
+    m = re.search(r'\d+', name)
+    if m:
+        return int(m.group())
+    return name
 
 # ─────────────────────────────────────────────
 # 프레임 단위 숫자 정렬 및 3자리 추출
@@ -101,25 +108,6 @@ def setup_detectron():
     return predictor, metadata, mark_class_idx
 
 # ─────────────────────────────────────────────
-# RTSP 캡처
-# ─────────────────────────────────────────────
-def open_capture(url):
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG if USE_FFMPEG else 0)
-    if DROP_OLD_FRAMES:
-        try:
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        except:
-            pass
-
-    if not cap.isOpened():
-        return None
-
-    for _ in range(3):
-        cap.read()
-
-    return cap
-
-# ─────────────────────────────────────────────
 # ZMQ Sender
 # ─────────────────────────────────────────────
 def make_zmq_sender():
@@ -132,47 +120,46 @@ def make_zmq_sender():
     return ctx, sock
 
 # ─────────────────────────────────────────────
-# 메인 루프
+# 메인 루프 (폴더 이미지 → 영상처럼 처리)
 # ─────────────────────────────────────────────
 def main():
     predictor, metadata, mark_class_idx = setup_detectron()
     ctx, sock = make_zmq_sender()
 
     frame_interval = 1.0 / max(1, FPS)
-    cap = None
     use_cuda = torch.cuda.is_available()
 
-    print(f"[INFO] RTSP: {RTSP_URL}, FPS={FPS}, CUDA={use_cuda}")
+    # 폴더에서 이미지 목록 읽기 + 정렬
+    image_paths = sorted(
+        glob.glob(os.path.join(IMAGE_DIR, "*")),
+        key=numeric_sort_key
+    )
+    image_paths = [p for p in image_paths if os.path.splitext(p)[1].lower() in [".jpg", ".jpeg", ".png", ".bmp"]]
+
+    if not image_paths:
+        print(f"[ERROR] No images found in {IMAGE_DIR}")
+        return
+
+    print(f"[INFO] IMAGE_DIR: {IMAGE_DIR}, num_images={len(image_paths)}, FPS={FPS}, CUDA={use_cuda}")
 
     # 상태 관리
     in_wagon = False
     wagon_start_ts = None
-    frame_candidates = []   # ← 프레임 단위에서 추출한 3자리 번호만 저장
-
+    frame_candidates = []   # 프레임 단위에서 추출한 3자리 번호들
+    idx = 0                 # 이미지 인덱스 (순차 + 반복)
 
     try:
         while True:
-
-            if cap is None or not cap.isOpened():
-                print("[RTSP] connecting...")
-                cap = open_capture(RTSP_URL)
-                if cap is None:
-                    print("[RTSP] open failed")
-                    time.sleep(RECONNECT_WAIT_SEC)
-                    continue
-                print("[RTSP] connected")
-
             t0 = time.time()
 
-            ret, img = cap.read()
-            if not ret or img is None:
-                print("[RTSP] read failed → reconnect")
-                cap.release()
-                cap = None
-                time.sleep(RECONNECT_WAIT_SEC)
+            img_path = image_paths[idx]
+            idx = (idx + 1) % len(image_paths)   # 끝까지 가면 다시 처음으로
+
+            img = cv2.imread(img_path)
+            if img is None:
+                print(f"[WARN] failed to read image: {img_path}")
                 continue
 
-            now = time.time()
             img = cv2.resize(img, (960, 540))
 
             # Detectron 추론
@@ -216,11 +203,12 @@ def main():
             if not in_wagon:
                 if has_any_detection:
                     in_wagon = True
-                    wagon_start_ts = now
+                    wagon_start_ts = time.time()
                     frame_candidates = []
                     send_code = "START"
                     print("[WAGON] START")
             else:
+                now = time.time()
                 # 3초 동안 프레임 단위 번호 저장
                 if len(num_instances) == 3:
                     code3 = try_decode_three_digits(num_instances, metadata)
@@ -267,8 +255,6 @@ def main():
         pass
 
     finally:
-        try: cap.release()
-        except: pass
         try: sock.close()
         except: pass
         try: ctx.term()
