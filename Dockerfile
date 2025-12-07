@@ -41,9 +41,11 @@ RUN pip install \
 # Detectron2를 Git에서 설치 (소스 빌드)
 RUN pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'
 
+# ⬇⬇⬇ 여기만 추가: 마지막에 numpy 버전 최종 고정
+RUN pip install numpy==1.26.4
+
 # 작업 디렉토리
 WORKDIR /workspace
 
 # 컨테이너 들어갔을 때 기본 쉘
 CMD ["/bin/bash"]
-

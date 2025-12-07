@@ -14,8 +14,8 @@ from detectron2.structures import Instances, Boxes
 # [환경설정]
 # ─────────────────────────────────────────────
 # RTSP 대신 폴더 이미지 사용
-IMAGE_DIR     = "/workspace/image"   # ← 여기에 이미지 폴더 경로 넣기
-FPS           = 2
+IMAGE_DIR     = "/workspace/linux/3Sintering/image"   # ← 여기에 이미지 폴더 경로 넣기
+FPS           = 5
 JPEG_QUALITY  = 80
 
 CFG_PATH      = "/workspace/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
