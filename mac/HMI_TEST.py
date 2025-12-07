@@ -8,7 +8,7 @@ import numpy as np
 # 예: sender IP가 192.168.0.10 이면
 #     "tcp://192.168.0.10:5577"
 # ─────────────────────────────────────────
-SENDER_ADDR = "tcp://127.0.0.1:5577"   # 테스트용(같은 PC일 때). 다른 PC면 IP 바꾸기.
+SENDER_ADDR = "tcp://172.30.1.33:5577"   # 테스트용(같은 PC일 때). 다른 PC면 IP 바꾸기.
 
 def main():
     ctx = zmq.Context()
