@@ -36,7 +36,9 @@ RUN pip install \
     tqdm \
     yacs \
     termcolor \
-    tabulate
+    tabulate \
+    pyzmq \
+    pymysql
 
 # Detectron2를 Git에서 설치 (소스 빌드)
 RUN pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'
