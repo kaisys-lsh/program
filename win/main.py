@@ -33,12 +33,22 @@ from utils.image_utils import (
     save_bgr_image_to_file
 )
 from utils.db_writer import DbWriterThread
-from workers.threads_zmq_rtsp import ZmqRecvThread, RtspThread
-from api.cry_api import CryApiThread
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi3.ui")
+USE_DUMMY_CRY = True 
+USE_DUMMY_CAMERA = True
+
+if USE_DUMMY_CAMERA:
+    from test.zmq_rtsp_test import ZmqRecvThread, RtspThread
+else:
+    from workers.threads_zmq_rtsp import ZmqRecvThread, RtspThread
+
+if USE_DUMMY_CRY:
+    from test.cry_api_test import CryApiThread
+else:
+    from api.cry_api import CryApiThread
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
