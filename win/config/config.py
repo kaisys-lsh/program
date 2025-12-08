@@ -10,7 +10,8 @@ os.chdir(BASE_DIR)
 # ZMQ / 구조체
 # ─────────────────────────────────────────
 # 리눅스PC 통신
-PULL_CONNECT = "tcp://192.168.0.103:5577"   # 송신 IP에 맞게
+#PULL_CONNECT = "tcp://192.168.0.103:5577"   # 송신 IP에 맞게
+PULL_CONNECT = "tcp://172.30.1.56:5577"   # HOME PC 테스트용
 STRUCT_FORMAT = "<ifii"
 STRUCT_SIZE = struct.calcsize(STRUCT_FORMAT)
 
