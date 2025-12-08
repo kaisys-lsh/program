@@ -1,6 +1,6 @@
 #thresholds_utils.py
 import json
-from config import THRESHOLDS_JSON, DEFAULT_THRESHOLDS
+from config.config import THRESHOLDS_JSON, DEFAULT_THRESHOLDS
 
 def load_thresholds_from_json():
     try:

@@ -5,7 +5,7 @@ import cv2
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from image_utils import decode_jpeg_to_bgr, qimage_from_bgr, cvimg_to_qimage
+from utils.image_utils import decode_jpeg_to_bgr, qimage_from_bgr, cvimg_to_qimage
 
 
 class ZmqRecvThread(QThread):

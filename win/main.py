@@ -24,17 +24,17 @@ from config import (
     RTSP_A2_IP, RTSP_B2_IP, RTSP_C2_IP,
 )
 
-from thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
-from image_utils import (
+from config.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
+from utils.image_utils import (
     set_label_pixmap_fill, ws_car1_path,
     ws_leak1_path, ds_leak1_path,
     ws_leak2_path, ds_leak2_path,
     ws_wheel1_path, ds_wheel1_path,
     save_bgr_image_to_file
 )
-from db_writer import DbWriterThread
-from threads_zmq_rtsp import ZmqRecvThread, RtspThread
-from cry_api import CryApiThread
+from utils.db_writer import DbWriterThread
+from workers.threads_zmq_rtsp import ZmqRecvThread, RtspThread
+from api.cry_api import CryApiThread
 
 
 class MainWindow(QMainWindow):

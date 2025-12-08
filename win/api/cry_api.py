@@ -7,7 +7,7 @@ import time
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from config import (
+from config.config import (
     CRY_USER, CRY_PW,
 )
 # IP/PORT/HTTPS 여부는 스레드 생성 시 인자로 받음

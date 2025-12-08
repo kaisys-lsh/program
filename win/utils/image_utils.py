@@ -7,7 +7,7 @@ import numpy as np
 from PyQt5.QtCore import Qt, QRect
 from PyQt5.QtGui import QImage, QPixmap
 
-from config import DATA_ROOT
+from config.config import DATA_ROOT
 
 # ─────────────────────────────────────────
 # QImage / OpenCV 변환

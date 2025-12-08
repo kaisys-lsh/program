@@ -6,7 +6,7 @@ import queue as _queue
 from PyQt5.QtCore import QThread
 import pymysql
 
-from config import DB_HOST, DB_PORT, DB_USER, DB_PW
+from config.config import DB_HOST, DB_PORT, DB_USER, DB_PW
 
 # 고정 DB / TABLE 이름
 DB_NAME = "posco"
