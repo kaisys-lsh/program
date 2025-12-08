@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QCoreApplication, QTimer
 from PyQt5.QtGui import QPixmap, QColor
 
-from config import (
+from config.config import (
     DB_HOST, DB_PORT, DB_USER, DB_PW,
     CRY_USER, CRY_PW,
     CRY_A1_IP, CRY_A1_PORT, CRY_A1_USE_HTTPS,
@@ -24,7 +24,7 @@ from config import (
     RTSP_A2_IP, RTSP_B2_IP, RTSP_C2_IP,
 )
 
-from config.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
+from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
 from utils.image_utils import (
     set_label_pixmap_fill, ws_car1_path,
     ws_leak1_path, ds_leak1_path,
@@ -37,10 +37,13 @@ from workers.threads_zmq_rtsp import ZmqRecvThread, RtspThread
 from api.cry_api import CryApiThread
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi3.ui")
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        uic.loadUi("window_hmi3.ui", self)
+        uic.loadUi(UI_PATH, self)
 
         # ============================================================
         # DB writer

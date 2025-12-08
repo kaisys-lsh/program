@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtCore import Qt
 
+
 # 작업 디렉토리 고정
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -28,9 +29,8 @@ TABLE_NAME = "data"
 THRESHOLDS_JSON = os.path.join(os.path.dirname(__file__), "thresholds.json")
 DEFAULT_THRESHOLDS = {"weak": 3.0, "mid": 4.0, "strong": 5.0, "min": 0.0}
 
-UI_FILE = "window_check2.ui"   # image_1~5, listWidget, time_label, num_label,
-                               # dB_label1~4 등이 있다고 가정
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UI_PATH = os.path.join(BASE_DIR, "ui", "window_check2.ui")
 
 # ─────────────────────────────────────
 # 임계값 로드/저장
@@ -67,7 +67,7 @@ def save_thresholds_to_json(th):
 class WindowClass(QMainWindow):
     def __init__(self, car_no: str = ""):
         super().__init__()
-        uic.loadUi(UI_FILE, self)
+        uic.loadUi(UI_PATH, self)
 
         # 이미지 라벨 기본 설정 (image_1~5)
         for name in ("image_1", "image_2", "image_3", "image_4", "image_5"):
