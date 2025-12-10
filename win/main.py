@@ -391,7 +391,8 @@ class MainWindow(QMainWindow):
         self.peak_ds1_bgr = None
 
         # cam1 이미지는 START + 1초 뒤에 캡쳐
-        QTimer.singleShot(1000, self._capture_cam1_after_start)
+        #QTimer.singleShot(1000, self._capture_cam1_after_start)
+        self._capture_cam1_after_start()
 
     def _capture_cam1_after_start(self):
         """START 후 1초 뒤에 cam1 프레임을 파일로 저장"""
