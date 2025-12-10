@@ -29,3 +29,12 @@ def get_device():
         return "cuda"
     else:
         return "cpu"
+
+
+# ─────────────────────────────────────────
+# 🔹 대차번호를 쓰기 위한 공유메모리 설정 (WS / DS 공용)
+#   → Wheel 상태 코드(Config.ini)랑 이름/크기 맞춰야 함
+# ─────────────────────────────────────────
+SHM_WS_NAME = "WS_wheel_status_mem"   # [WS_POS] SM_Name
+SHM_DS_NAME = "DS_wheel_status_mem"   # [DS_POS] SM_Name
+SHM_SIZE    = 100                     # [WS_POS]/[DS_POS] SM_Size
