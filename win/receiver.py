@@ -2,7 +2,7 @@ import zmq
 import cv2
 import numpy as np
 
-PULL_ADDR = "tcp://localhost:5577"   # sender가 tcp://*:5577 로 bind하므로 동일 포트로 접속
+PULL_ADDR = "tcp://192.168.0.103:5577"  # sender가 tcp://*:5577 로 bind하므로 동일 포트로 접속
 
 def main():
     ctx = zmq.Context()
