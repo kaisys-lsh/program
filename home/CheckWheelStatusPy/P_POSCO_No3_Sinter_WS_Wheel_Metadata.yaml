@@ -1,0 +1,5 @@
+evaluator_type: coco
+thing_classes:
+- Bolt
+- CenterHole
+thing_colors: null
