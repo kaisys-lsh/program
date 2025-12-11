@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
         self.button_labels = [""] * len(self.paint_buttons)
         self.button_db_values = [None] * len(self.paint_buttons)
 
-        # ============================================================
+         # ============================================================
         # 상태 변수
         # ============================================================
         self.current_label = None   # 현재 대차 번호 ("none" 또는 3자리 숫자)
@@ -87,7 +87,6 @@ class MainWindow(QMainWindow):
         # 1번 구간 START~END 플래그 + cam1 캡쳐 예약 여부
         self.in_wagon = False
         self.cam1_pending_capture = False
-
 
         # cam1 이미지 경로
         self.current_cam1_path = ""
@@ -112,6 +111,13 @@ class MainWindow(QMainWindow):
         self.latest_frame_ds2_bgr = None
         self.latest_frame_wheel1_bgr = None
 
+        # 휠 상태/이미지 임시 저장 (car_no 기준)
+        self.pending_wheel = {}              # 테이블 row 아직 없을 때 rot/pos 저장
+        self.ws_wheel_status_map = {}        # car_no -> (1st_status, 2nd_status)
+        self.ds_wheel_status_map = {}        # car_no -> (1st_status, 2nd_status)
+        self.ws_wheel_image_map = {}         # car_no -> ws 휠 이미지 경로
+        self.ds_wheel_image_map = {}         # car_no -> ds 휠 이미지 경로
+
         # 대차 큐 (1번 구간 완료된 대차들이 쌓임)
         self.car_queue = []
         self.delay_count = 2   # 7대차 뒤에서 WS2/DS2를 붙임
@@ -129,14 +135,18 @@ class MainWindow(QMainWindow):
         # ============================================================
         # 테이블 설정 (WS1/DS1/WS2/DS2/휠)
         # ============================================================
-        self.tableWidget.setColumnCount(7)
-        self.tableWidget.setHorizontalHeaderLabels(["대차", "WS1", "DS1", "WS2", "DS2", "WS휠","DS휠"])
+        self.tableWidget.setColumnCount(9)
+        self.tableWidget.setHorizontalHeaderLabels(["대차", "WS1", "DS1", "WS2", "DS2", "WS휠1","WS휠2","DS휠1","DS휠2"])
         self.tableWidget.verticalHeader().setVisible(False)
         self.tableWidget.setEditTriggers(self.tableWidget.NoEditTriggers)
         self.tableWidget.setSelectionBehavior(self.tableWidget.SelectRows)
         self.tableWidget.setSelectionMode(self.tableWidget.SingleSelection)
         header = self.tableWidget.horizontalHeader()
         header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+
+        font = self.tableWidget.font()
+        font.setPointSize(8)  # 기본보다 작게
+        self.tableWidget.setFont(font)
 
         self.max_table_rows = 172
 
@@ -414,15 +424,27 @@ class MainWindow(QMainWindow):
         if not car_no:
             return
 
+        car_no_str = str(car_no).strip()
+
         # === 여기서 상태 판정 ===
-        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
+        status_1st = self._judge_one_wheel(w1_rot, w1_pos)
+        status_2nd = self._judge_one_wheel(w2_rot, w2_pos)
 
-        # 라벨에 JSON 대신 상태 표시
-        label_str = f"{car_no} {pos} : {status_text}"
-        self.msg_4.setText(label_str)
-        self.msg_4.setStyleSheet(f"background-color: {self._wheel_color_for_status(status_text)}; color: black;")
+        # 라벨에 휠별 상태 표시 (색은 넣지 않음)
+        self.msg_4.setText(f"1st:{status_1st}")
+        self.msg_8.setText(f"2nd:{status_2nd}")
 
-        # 테이블에도 반영 (이미 만든 함수 사용 중이면 그대로 유지)
+        # 🔹 WS 휠 상태를 car_no 기준으로 저장
+        self.ws_wheel_status_map[car_no_str] = (status_1st, status_2nd)
+
+        # 🔹 WS 휠 이미지: 아직 이 대차에 대해 안 저장했을 때만 1장 저장
+        if bgr is not None and car_no_str not in self.ws_wheel_image_map:
+            ts = datetime.now()
+            path_ws = ws_wheel1_path(ts, car_no_str)
+            if save_bgr_image_to_file(bgr, path_ws):
+                self.ws_wheel_image_map[car_no_str] = path_ws
+
+        # 테이블에도 반영
         try:
             self._update_wheel_status_in_table(
                 car_no=str(car_no),
@@ -434,6 +456,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             print("update_ui_wheel1 error:", e)
+
 
 
 
@@ -474,13 +497,25 @@ class MainWindow(QMainWindow):
         if not car_no:
             return
 
-        # 상태 판정
-        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
+        car_no_str = str(car_no).strip()
 
-        # 라벨에 상태 표시
-        label_str = f"{car_no} {pos} : {status_text}"
-        self.msg_7.setText(label_str)
-        self.msg_7.setStyleSheet(f"background-color: {self._wheel_color_for_status(status_text)}; color: black;")
+        # 휠별 상태 판정
+        status_1st = self._judge_one_wheel(w1_rot, w1_pos)
+        status_2nd = self._judge_one_wheel(w2_rot, w2_pos)
+
+        # 라벨에 휠별 상태 표시 (색 없음)
+        self.msg_7.setText(f"1st:{status_1st}")
+        self.msg_9.setText(f"2nd:{status_2nd}")
+
+        # 🔹 DS 휠 상태 저장
+        self.ds_wheel_status_map[car_no_str] = (status_1st, status_2nd)
+
+        # 🔹 DS 휠 이미지 저장 (대차당 1장)
+        if bgr is not None and car_no_str not in self.ds_wheel_image_map:
+            ts = datetime.now()
+            path_ds = ds_wheel1_path(ts, car_no_str)
+            if save_bgr_image_to_file(bgr, path_ds):
+                self.ds_wheel_image_map[car_no_str] = path_ds
 
         # 테이블 반영
         try:
@@ -494,6 +529,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             print("update_ui_wheel2 error:", e)
+
 
 
     # ================================================================
@@ -674,8 +710,12 @@ class MainWindow(QMainWindow):
     # ================================================================
     # UI/DB 반영
     # ================================================================
+        # ================================================================
+    # UI/DB 반영
+    # ================================================================
     def _apply_record_to_ui_and_db(self, rec: dict):
         car_no = rec["car_no"]
+        car_no_str = str(car_no).strip()
 
         # 버튼에는 'none' 대신 'N' 문자열로 표시
         label_text = "N" if car_no == "none" else car_no
@@ -684,8 +724,36 @@ class MainWindow(QMainWindow):
         # 테이블 한 줄 추가
         self._table_insert_new(rec)
 
+        # 🔹 휠 상태/이미지 정보를 rec에 붙여서 DB로 넘김
+        ws_w1 = ws_w2 = ds_w1 = ds_w2 = ""
+        img_ws_wheel = ""
+        img_ds_wheel = ""
+
+        if car_no_str in self.ws_wheel_status_map:
+            ws_w1, ws_w2 = self.ws_wheel_status_map[car_no_str]
+        if car_no_str in self.ds_wheel_status_map:
+            ds_w1, ds_w2 = self.ds_wheel_status_map[car_no_str]
+        if car_no_str in self.ws_wheel_image_map:
+            img_ws_wheel = self.ws_wheel_image_map[car_no_str]
+        if car_no_str in self.ds_wheel_image_map:
+            img_ds_wheel = self.ds_wheel_image_map[car_no_str]
+
+        rec["ws_wheel1_status"] = ws_w1
+        rec["ws_wheel2_status"] = ws_w2
+        rec["ds_wheel1_status"] = ds_w1
+        rec["ds_wheel2_status"] = ds_w2
+        rec["img_ws_wheel_path"] = img_ws_wheel
+        rec["img_ds_wheel_path"] = img_ds_wheel
+
+        # 한 번 쓴 대차는 맵에서 제거(메모리 정리)
+        self.ws_wheel_status_map.pop(car_no_str, None)
+        self.ds_wheel_status_map.pop(car_no_str, None)
+        self.ws_wheel_image_map.pop(car_no_str, None)
+        self.ds_wheel_image_map.pop(car_no_str, None)
+
         # DB에는 car_no='none' 그대로 저장
         self.db_writer.enqueue(rec)
+
 
     # ================================================================
     # 테이블
@@ -708,11 +776,37 @@ class MainWindow(QMainWindow):
         setcol(2, f"{rec['ds1_db']:.2f}", rec["ds1_db"])
         setcol(3, f"{rec['ws2_db']:.2f}", rec["ws2_db"])
         setcol(4, f"{rec['ds2_db']:.2f}", rec["ds2_db"])
-        setcol(5, "")  # WS휠 상태
-        setcol(6, "")  # DS휠 상태
+        setcol(5, "")  # WS휠1
+        setcol(6, "")  # WS휠2
+        setcol(7, "")  # DS휠1
+        setcol(8, "")  # DS휠2
 
         if self.tableWidget.rowCount() > self.max_table_rows:
             self.tableWidget.removeRow(self.tableWidget.rowCount() - 1)
+
+        # (밑에서 pending 휠 상태 있을 때 채워주는 로직 추가할 거라면 여기에 넣을 예정)
+
+        car_no_str = str(car_no).strip()
+        if car_no_str in self.pending_wheel:
+            info = self.pending_wheel[car_no_str]
+
+            # WS 휠 상태가 미리 와 있었으면 적용
+            if "WS" in info:
+                w1r, w1p, w2r, w2p = info["WS"]
+                self._update_wheel_status_in_table(
+                    car_no_str, "WS", w1r, w1p, w2r, w2p
+                )
+
+            # DS 휠 상태도 마찬가지
+            if "DS" in info:
+                w1r, w1p, w2r, w2p = info["DS"]
+                self._update_wheel_status_in_table(
+                    car_no_str, "DS", w1r, w1p, w2r, w2p
+                )
+
+            # 다 썼으니 pending_wheel 에서 제거
+            del self.pending_wheel[car_no_str]
+
 
 
     def _repaint_table(self):
@@ -776,7 +870,7 @@ class MainWindow(QMainWindow):
     def _judge_one_wheel(self, rot, pos):
         """
         rot: 0/1/2, pos: 0/1/2
-        return: "정상" / "탈락" / "인식 실패"
+        return: "정상" / "비정상" / "인식 실패"
         """
         try:
             r = int(rot)
@@ -784,57 +878,71 @@ class MainWindow(QMainWindow):
         except Exception:
             return "인식 실패"
 
-        # 하나라도 비정상이면 탈락
+        # 하나라도 비정상이면 비정상
         if r == 2 or p == 2:
-            return "탈락"
+            return "비정상"
         # 비정상은 없지만 감지 실패가 있으면 인식 실패
         if r == 0 or p == 0:
-            return "인식 실패"
+            return "검출X"
         # 둘 다 1인 경우
         return "정상"
+    
+    def judge_one_wheel(rot, pos, stop_flag):
+        # stop_flag: 0 = 이동, 1 = 정지
+        try:
+            r = int(rot)
+            p = int(pos)
+        except:
+            return "검출X"
 
-    def _summary_two_wheels(self, r1, p1, r2, p2):
-        """
-        두 휠(1st, 2nd)을 종합해서 대차 전체 휠 상태 하나로 요약
-        """
-        s1 = self._judge_one_wheel(r1, p1)
-        s2 = self._judge_one_wheel(r2, p2)
+        # 공통: 감지 실패 먼저 체크
+        if r == 0 or p == 0:
+            return "검출X"
 
-        # 우선순위: 탈락 > 인식 실패 > 정상
-        if "탈락" in (s1, s2):
-            return "탈락"
-        if "인식 실패" in (s1, s2):
-            return "인식 실패"
-        return "정상"
+        # 1) 대차 정지 상태일 때
+        if stop_flag == 1:
+            # 회전 없어도 되고, 위치 2여도 "정지"로 본다
+            return "정지"
+
+        # 2) 이동 중일 때
+        if r == 2 or p == 2:
+            return "비정상"
+
+        if r == 1 and p == 1:
+            return "정상"
+
+        return "검출X"
+
 
     def _wheel_color_for_status(self, status_text: str):
         """
         휠 상태별 색상 (배경)
+        정상: 색 없음(흰색), 인식 실패: 노랑, 비정상: 빨강
         """
-        if status_text == "정상":
-            return "#67E467"   # 초록
-        if status_text == "탈락":
+        if status_text == "비정상":
             return "#EB5E5E"   # 빨강
-        if status_text == "인식 실패":
+        if status_text == "검출X":
             return "#E7E55F"   # 노랑(경고)
-        return "#FFFFFF"       # 기타
+        # 정상 또는 기타 -> 흰색(무색)
+        return "#FFFFFF"
+
 
     def _set_wheel_cell(self, row: int, col: int, status_text: str):
-        """
-        tableWidget 의 (row, col)에 휠 상태 텍스트 + 색 적용
-        col: 5 -> WS휠, 6 -> DS휠
-        """
         item = self.tableWidget.item(row, col)
         if item is None:
             item = QTableWidgetItem()
             self.tableWidget.setItem(row, col, item)
 
         item.setText(status_text)
-        item.setBackground(QColor(self._wheel_color_for_status(status_text)))
+
+        # 정상일 때는 흰색(무색), 나머지는 색상
+        color = self._wheel_color_for_status(status_text)
+        item.setBackground(QColor(color))
         item.setForeground(QColor("black"))
 
+
     def _update_wheel_status_in_table(self, car_no: str, pos: str,
-                                      w1_rot, w1_pos, w2_rot, w2_pos):
+                                  w1_rot, w1_pos, w2_rot, w2_pos):
         """
         cam2(WS/DS) 에서 받은 wheel 상태를 테이블에 반영
         car_no : "108" 같은 3자리 문자열
@@ -843,6 +951,8 @@ class MainWindow(QMainWindow):
         if not car_no:
             return
 
+        car_no_str = str(car_no).strip()
+
         # 테이블에서 car_no가 같은 row 찾기
         rows = self.tableWidget.rowCount()
         target_row = None
@@ -850,26 +960,37 @@ class MainWindow(QMainWindow):
             item_car = self.tableWidget.item(r, 0)
             if item_car is None:
                 continue
-            if item_car.text().strip() == str(car_no).strip():
+            if item_car.text().strip() == car_no_str:
                 target_row = r
                 break
 
-        # 아직 그 대차 row가 없으면 그냥 무시
+        # 아직 그 대차 row가 없으면 → pending_wheel에 저장해두고 리턴
         if target_row is None:
+            pos_key = "WS" if pos == "WS" else "DS"
+
+            if car_no_str not in self.pending_wheel:
+                self.pending_wheel[car_no_str] = {}
+
+            # 나중에 다시 쓸 수 있게 rot/pos 다 저장
+            self.pending_wheel[car_no_str][pos_key] = (w1_rot, w1_pos, w2_rot, w2_pos)
             return
 
-        # 2개 휠 종합해서 상태 텍스트 만들기
-        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
 
-        # pos 에 따라 WS휠(5), DS휠(6) 컬럼 선택
+        # 1st / 2nd 휠 상태 텍스트
+        status_1st = self._judge_one_wheel(w1_rot, w1_pos)
+        status_2nd = self._judge_one_wheel(w2_rot, w2_pos)
+
         if pos == "WS":
-            col = 5
+            col1, col2 = 5, 6   # WS휠1, WS휠2
         elif pos == "DS":
-            col = 6
+            col1, col2 = 7, 8   # DS휠1, DS휠2
         else:
-            col = 5  # 혹시 이상한 값 들어오면 그냥 WS쪽으로
+            # 이상값이면 WS 쪽에라도 넣자
+            col1, col2 = 5, 6
 
-        self._set_wheel_cell(target_row, col, status_text)
+        self._set_wheel_cell(target_row, col1, status_1st)
+        self._set_wheel_cell(target_row, col2, status_2nd)
+
 
 
     # ================================================================

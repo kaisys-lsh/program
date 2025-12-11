@@ -30,7 +30,7 @@ THRESHOLDS_JSON = os.path.join(os.path.dirname(__file__), "thresholds.json")
 DEFAULT_THRESHOLDS = {"weak": 3.0, "mid": 4.0, "strong": 5.0, "min": 0.0}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UI_PATH = os.path.join(BASE_DIR, "ui", "window_check2.ui")
+UI_PATH = os.path.join(BASE_DIR, "ui", "window_check.ui")
 
 # ─────────────────────────────────────
 # 임계값 로드/저장

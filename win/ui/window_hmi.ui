@@ -103,9 +103,9 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="image_1">
     <property name="geometry">
      <rect>
-      <x>449</x>
+      <x>439</x>
       <y>319</y>
-      <width>491</width>
+      <width>511</width>
       <height>300</height>
      </rect>
     </property>
@@ -4056,7 +4056,7 @@ color: rgb(255, 255, 255);</string>
      <rect>
       <x>549</x>
       <y>270</y>
-      <width>391</width>
+      <width>401</width>
       <height>40</height>
      </rect>
     </property>
@@ -4555,9 +4555,9 @@ background-color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="msg_1">
     <property name="geometry">
      <rect>
-      <x>450</x>
+      <x>440</x>
       <y>270</y>
-      <width>91</width>
+      <width>101</width>
       <height>41</height>
      </rect>
     </property>
@@ -4990,8 +4990,8 @@ background-color: rgb(255, 255, 255);</string>
     <property name="geometry">
      <rect>
       <x>440</x>
-      <y>630</y>
-      <width>91</width>
+      <y>660</y>
+      <width>120</width>
       <height>41</height>
      </rect>
     </property>
@@ -5102,9 +5102,9 @@ background-color: rgb(255, 255, 255);</string>
     <property name="geometry">
      <rect>
       <x>440</x>
-      <y>680</y>
+      <y>710</y>
       <width>250</width>
-      <height>300</height>
+      <height>271</height>
      </rect>
     </property>
     <property name="styleSheet">
@@ -5182,18 +5182,18 @@ background-color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="label_15">
     <property name="geometry">
      <rect>
-      <x>540</x>
+      <x>440</x>
       <y>630</y>
-      <width>151</width>
-      <height>40</height>
+      <width>251</width>
+      <height>21</height>
      </rect>
     </property>
     <property name="font">
      <font>
       <family>맑은 고딕</family>
-      <pointsize>20</pointsize>
-      <weight>75</weight>
-      <bold>true</bold>
+      <pointsize>12</pointsize>
+      <weight>50</weight>
+      <bold>false</bold>
      </font>
     </property>
     <property name="styleSheet">
@@ -5214,9 +5214,9 @@ color: rgb(255, 255, 255);</string>
     <property name="geometry">
      <rect>
       <x>700</x>
-      <y>680</y>
+      <y>710</y>
       <width>250</width>
-      <height>300</height>
+      <height>271</height>
      </rect>
     </property>
     <property name="styleSheet">
@@ -5233,8 +5233,8 @@ color: rgb(255, 255, 255);</string>
     <property name="geometry">
      <rect>
       <x>700</x>
-      <y>630</y>
-      <width>91</width>
+      <y>660</y>
+      <width>120</width>
       <height>41</height>
      </rect>
     </property>
@@ -5263,18 +5263,18 @@ background-color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="label_16">
     <property name="geometry">
      <rect>
-      <x>800</x>
+      <x>700</x>
       <y>630</y>
-      <width>151</width>
-      <height>40</height>
+      <width>251</width>
+      <height>21</height>
      </rect>
     </property>
     <property name="font">
      <font>
       <family>맑은 고딕</family>
-      <pointsize>20</pointsize>
-      <weight>75</weight>
-      <bold>true</bold>
+      <pointsize>12</pointsize>
+      <weight>50</weight>
+      <bold>false</bold>
      </font>
     </property>
     <property name="styleSheet">
@@ -5286,6 +5286,68 @@ color: rgb(255, 255, 255);</string>
     </property>
     <property name="text">
      <string>D/S 휠</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="msg_8">
+    <property name="geometry">
+     <rect>
+      <x>570</x>
+      <y>660</y>
+      <width>120</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <family>맑은 고딕</family>
+      <pointsize>14</pointsize>
+      <weight>75</weight>
+      <bold>true</bold>
+     </font>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">color: rgb(0, 0, 0);
+background-color: rgb(255, 255, 255);</string>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::NoFrame</enum>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="msg_9">
+    <property name="geometry">
+     <rect>
+      <x>830</x>
+      <y>660</y>
+      <width>120</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <family>맑은 고딕</family>
+      <pointsize>14</pointsize>
+      <weight>75</weight>
+      <bold>true</bold>
+     </font>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">color: rgb(0, 0, 0);
+background-color: rgb(255, 255, 255);</string>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::NoFrame</enum>
+    </property>
+    <property name="text">
+     <string/>
     </property>
     <property name="alignment">
      <set>Qt::AlignCenter</set>
@@ -5500,6 +5562,8 @@ color: rgb(255, 255, 255);</string>
    <zorder>image_7</zorder>
    <zorder>msg_7</zorder>
    <zorder>label_16</zorder>
+   <zorder>msg_8</zorder>
+   <zorder>msg_9</zorder>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

@@ -1,4 +1,3 @@
-#db_writer.py
 import time
 from datetime import datetime
 import queue as _queue
@@ -31,6 +30,14 @@ class DbWriterThread(QThread):
         "img_ds1_path": str,
         "img_ws2_path": str,
         "img_ds2_path": str,
+
+        # ★ 휠 상태 / 이미지 (WS/DS 각각 2개)
+        "ws_wheel1_status": str,   # 예: "정상", "비정상", "검출X"
+        "ws_wheel2_status": str,
+        "ds_wheel1_status": str,
+        "ds_wheel2_status": str,
+        "img_ws_wheel_path": str,  # WS 휠 이미지 경로
+        "img_ds_wheel_path": str,  # DS 휠 이미지 경로
       }
 
     DB:   posco
@@ -133,6 +140,7 @@ class DbWriterThread(QThread):
     def _ensure_table(self):
         """
         posco.data 테이블이 없으면 생성.
+        (이미 있으면 이 CREATE TABLE은 그냥 패스됨)
         """
         self._ensure_database()
         self._connect_db()
@@ -153,6 +161,14 @@ class DbWriterThread(QThread):
             img_ds1_path  VARCHAR(255) NOT NULL,
             img_ws2_path  VARCHAR(255) NOT NULL,
             img_ds2_path  VARCHAR(255) NOT NULL,
+
+            -- ★ 휠 상태 4개 + 휠 이미지 2개
+            ws_wheel1_status  VARCHAR(32)  NOT NULL,
+            ws_wheel2_status  VARCHAR(32)  NOT NULL,
+            ds_wheel1_status  VARCHAR(32)  NOT NULL,
+            ds_wheel2_status  VARCHAR(32)  NOT NULL,
+            img_ws_wheel_path VARCHAR(255) NOT NULL,
+            img_ds_wheel_path VARCHAR(255) NOT NULL,
 
             PRIMARY KEY(id),
             INDEX idx_ts (ts),
@@ -175,9 +191,14 @@ class DbWriterThread(QThread):
         INSERT INTO `{TABLE_NAME}` (
             ts, car_no,
             ws1_db, ds1_db, ws2_db, ds2_db,
-            img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path
+            img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path,
+            ws_wheel1_status, ws_wheel2_status, ds_wheel1_status, ds_wheel2_status,
+            img_ws_wheel_path, img_ds_wheel_path
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s)
         """
 
         vals = (
@@ -192,6 +213,12 @@ class DbWriterThread(QThread):
             row["img_ds1_path"],
             row["img_ws2_path"],
             row["img_ds2_path"],
+            row["ws_wheel1_status"],
+            row["ws_wheel2_status"],
+            row["ds_wheel1_status"],
+            row["ds_wheel2_status"],
+            row["img_ws_wheel_path"],
+            row["img_ds_wheel_path"],
         )
 
         with self._conn.cursor() as cur:
@@ -230,6 +257,14 @@ class DbWriterThread(QThread):
         img_ws2_path = _s("img_ws2_path")
         img_ds2_path = _s("img_ds2_path")
 
+        # ★ 휠 상태/이미지 (없으면 빈 문자열로 들어감)
+        ws_wheel1_status  = _s("ws_wheel1_status")
+        ws_wheel2_status  = _s("ws_wheel2_status")
+        ds_wheel1_status  = _s("ds_wheel1_status")
+        ds_wheel2_status  = _s("ds_wheel2_status")
+        img_ws_wheel_path = _s("img_ws_wheel_path")
+        img_ds_wheel_path = _s("img_ds_wheel_path")
+
         row = {
             "ts": ts,
             "car_no": car_no,
@@ -242,6 +277,12 @@ class DbWriterThread(QThread):
             "img_ds1_path": img_ds1_path,
             "img_ws2_path": img_ws2_path,
             "img_ds2_path": img_ds2_path,
+            "ws_wheel1_status": ws_wheel1_status,
+            "ws_wheel2_status": ws_wheel2_status,
+            "ds_wheel1_status": ds_wheel1_status,
+            "ds_wheel2_status": ds_wheel2_status,
+            "img_ws_wheel_path": img_ws_wheel_path,
+            "img_ds_wheel_path": img_ds_wheel_path,
         }
 
         self._insert_row(row)
