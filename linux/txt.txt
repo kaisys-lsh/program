@@ -15,3 +15,5 @@ ws_car_no[11..13]   = '187'
 
 
 클라이언트에서는
+
+{"type": "wheel_status", "pos": "WS", "car_no": "060", "wheel_1st_rotation": 0, "wheel_1st_position": 0, "wheel_2nd_rotation": 1, "wheel_2nd_position": 0}
