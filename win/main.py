@@ -20,7 +20,8 @@ from config.config import (
     CRY_A2_IP, CRY_A2_PORT, CRY_A2_USE_HTTPS,
     CRY_B2_IP, CRY_B2_PORT, CRY_B2_USE_HTTPS,
     CRY_INTERVAL_SEC, CRY_TIMEOUT_SEC,
-    PULL_CONNECT, RTSP_A1_IP, RTSP_B1_IP, RTSP_C1_IP,
+    PULL_CONNECT1, PULL_CONNECT2, PULL_CONNECT3, 
+    RTSP_A1_IP, RTSP_B1_IP, RTSP_C1_IP,
     RTSP_A2_IP, RTSP_B2_IP, RTSP_C2_IP,
 )
 
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
         self.in_wagon = False
         self.cam1_pending_capture = False
 
+
         # cam1 이미지 경로
         self.current_cam1_path = ""
 
@@ -128,8 +130,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # 테이블 설정 (WS1/DS1/WS2/DS2/휠)
         # ============================================================
-        self.tableWidget.setColumnCount(6)
-        self.tableWidget.setHorizontalHeaderLabels(["대차", "ws1", "ds1", "ws2", "ds2", "휠"])
+        self.tableWidget.setColumnCount(7)
+        self.tableWidget.setHorizontalHeaderLabels(["대차", "WS1", "DS1", "WS2", "DS2", "WS휠","DS휠"])
         self.tableWidget.verticalHeader().setVisible(False)
         self.tableWidget.setEditTriggers(self.tableWidget.NoEditTriggers)
         self.tableWidget.setSelectionBehavior(self.tableWidget.SelectRows)
@@ -142,9 +144,14 @@ class MainWindow(QMainWindow):
         # ============================================================
         # ZMQ (cam1)
         # ============================================================
-        self.zmq_thread = ZmqRecvThread(PULL_CONNECT, parent=self)
+        self.zmq_thread = ZmqRecvThread(PULL_CONNECT1, parent=self)
         self.zmq_thread.frame_ready.connect(self.update_ui_cam)
         self.zmq_thread.start()
+
+        self.zmq_thread2 = ZmqRecvThread(PULL_CONNECT2, parent=self)
+        self.zmq_thread2.frame_ready.connect(self.update_ui_cam2)
+        self.zmq_thread2.start()
+
 
         # ============================================================
         # RTSP threads
@@ -372,6 +379,24 @@ class MainWindow(QMainWindow):
 
         # 그 외 텍스트는 무시
         return
+    
+    def update_ui_cam2(self, qimg, bgr, text):
+        # cam2 실시간 영상 표시
+        set_label_pixmap_fill(self.image_6, QPixmap.fromImage(qimg))
+
+        # 필요하면 나중에 저장/캡쳐 쓸 수 있게 보관
+        self.latest_frame_cam2_bgr = bgr
+
+        # text는 JSON 문자열이라고 했으니까 일단 그대로 보여줌
+        if isinstance(text, str):
+            self.msg_4.setText(text)
+            print(text)
+        else:
+            # 혹시 bytes나 다른 타입으로 들어올 수도 있으니 방어
+            try:
+                self.msg_4.setText(str(text))
+            except Exception:
+                self.msg_4.setText("")
 
     # ================================================================
     # START / END 처리 (1번 구간)
@@ -680,8 +705,8 @@ class MainWindow(QMainWindow):
 
         for w in [
             self.zmq_thread,
+            self.zmq_thread2,
             self.rtspA1, self.rtspB1, self.rtspA2, self.rtspB2,
-            #self.rtspC1,
             self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2
         ]:
             try:
