@@ -4,6 +4,7 @@ import sys
 import subprocess
 from datetime import datetime
 import re
+import json
 
 from PyQt5 import uic, QtWidgets
 from PyQt5.QtWidgets import (
@@ -21,9 +22,7 @@ from config.config import (
     CRY_B2_IP, CRY_B2_PORT, CRY_B2_USE_HTTPS,
     CRY_INTERVAL_SEC, CRY_TIMEOUT_SEC,
     PULL_CONNECT1, PULL_CONNECT2, PULL_CONNECT3, 
-    RTSP_A1_IP, RTSP_B1_IP, RTSP_C1_IP,
-    RTSP_A2_IP, RTSP_B2_IP, RTSP_C2_IP,
-)
+    RTSP_A1_IP, RTSP_B1_IP, RTSP_A2_IP, RTSP_B2_IP)
 
 from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
 from utils.image_utils import (
@@ -36,7 +35,7 @@ from utils.image_utils import (
 from utils.db_writer import DbWriterThread
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi3.ui")
+UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi.ui")
 USE_DUMMY_CRY = True 
 USE_DUMMY_CAMERA = True
 
@@ -142,15 +141,19 @@ class MainWindow(QMainWindow):
         self.max_table_rows = 172
 
         # ============================================================
-        # ZMQ (cam1)
+        # ZMQ 
         # ============================================================
         self.zmq_thread = ZmqRecvThread(PULL_CONNECT1, parent=self)
         self.zmq_thread.frame_ready.connect(self.update_ui_cam)
         self.zmq_thread.start()
 
         self.zmq_thread2 = ZmqRecvThread(PULL_CONNECT2, parent=self)
-        self.zmq_thread2.frame_ready.connect(self.update_ui_cam2)
+        self.zmq_thread2.frame_ready.connect(self.update_ui_wheel1)
         self.zmq_thread2.start()
+
+        self.zmq_thread3 = ZmqRecvThread(PULL_CONNECT3, parent=self)
+        self.zmq_thread3.frame_ready.connect(self.update_ui_wheel2)
+        self.zmq_thread3.start()
 
 
         # ============================================================
@@ -171,10 +174,6 @@ class MainWindow(QMainWindow):
         self.rtspB2 = RtspThread(RTSP_B2_IP, name="DS2", parent=self)
         self.rtspB2.frame_ready.connect(self.update_ds2_frame)
         self.rtspB2.start()
-
-        # self.rtspC1 = RtspThread(RTSP_C1_IP, name="Wheel1", parent=self)
-        # self.rtspC1.frame_ready.connect(self.update_wheel1_frame)
-        # self.rtspC1.start()
 
         # ============================================================
         # CRY dB threads — WS1/DS1/WS2/DS2 각각 따로
@@ -284,10 +283,6 @@ class MainWindow(QMainWindow):
         set_label_pixmap_fill(self.image_5, QPixmap.fromImage(qimg))
         self.latest_frame_ds2_bgr = bgr
 
-    # def update_wheel1_frame(self, qimg, bgr):
-    #     set_label_pixmap_fill(self.image_6, QPixmap.fromImage(qimg))
-    #     self.latest_frame_wheel1_bgr = bgr
-
     # ================================================================
     # CRY dB 업데이트 (WS1 / DS1 / WS2 / DS2)
     # ================================================================
@@ -380,23 +375,126 @@ class MainWindow(QMainWindow):
         # 그 외 텍스트는 무시
         return
     
-    def update_ui_cam2(self, qimg, bgr, text):
-        # cam2 실시간 영상 표시
+    def update_ui_wheel1(self, qimg, bgr, text):
+        #  휠 WS
         set_label_pixmap_fill(self.image_6, QPixmap.fromImage(qimg))
-
-        # 필요하면 나중에 저장/캡쳐 쓸 수 있게 보관
         self.latest_frame_cam2_bgr = bgr
 
-        # text는 JSON 문자열이라고 했으니까 일단 그대로 보여줌
+        # 문자열로 정리
         if isinstance(text, str):
-            self.msg_4.setText(text)
-            print(text)
+            text_str = text
+            print(text_str)
         else:
-            # 혹시 bytes나 다른 타입으로 들어올 수도 있으니 방어
             try:
-                self.msg_4.setText(str(text))
+                text_str = text.decode("utf-8") if isinstance(text, (bytes, bytearray)) else str(text)
             except Exception:
-                self.msg_4.setText("")
+                text_str = ""
+
+        if not text_str:
+            return
+
+        # JSON 파싱
+        try:
+            data = json.loads(text_str)
+        except Exception:
+            return
+
+        # type 체크 (안 맞으면 무시)
+        if data.get("type") != "wheel_status":
+            return
+
+        car_no = data.get("car_no")
+        pos    = data.get("pos", "WS")  # 기본 WS
+
+        w1_rot = data.get("wheel_1st_rotation", 0)
+        w1_pos = data.get("wheel_1st_position", 0)
+        w2_rot = data.get("wheel_2nd_rotation", 0)
+        w2_pos = data.get("wheel_2nd_position", 0)
+
+        if not car_no:
+            return
+
+        # === 여기서 상태 판정 ===
+        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
+
+        # 라벨에 JSON 대신 상태 표시
+        label_str = f"{car_no} {pos} : {status_text}"
+        self.msg_4.setText(label_str)
+        self.msg_4.setStyleSheet(f"background-color: {self._wheel_color_for_status(status_text)}; color: black;")
+
+        # 테이블에도 반영 (이미 만든 함수 사용 중이면 그대로 유지)
+        try:
+            self._update_wheel_status_in_table(
+                car_no=str(car_no),
+                pos=str(pos) if pos is not None else "WS",
+                w1_rot=w1_rot,
+                w1_pos=w1_pos,
+                w2_rot=w2_rot,
+                w2_pos=w2_pos,
+            )
+        except Exception as e:
+            print("update_ui_wheel1 error:", e)
+
+
+
+    def update_ui_wheel2(self, qimg, bgr, text):
+        # 휠 DS
+        set_label_pixmap_fill(self.image_7, QPixmap.fromImage(qimg))
+        self.latest_frame_cam3_bgr = bgr
+
+        # 문자열로 정리
+        if isinstance(text, str):
+            text_str = text
+        else:
+            try:
+                text_str = text.decode("utf-8") if isinstance(text, (bytes, bytearray)) else str(text)
+            except Exception:
+                text_str = ""
+
+        if not text_str:
+            return
+
+        # JSON 파싱
+        try:
+            data = json.loads(text_str)
+        except Exception:
+            return
+
+        if data.get("type") != "wheel_status":
+            return
+
+        car_no = data.get("car_no")
+        pos    = data.get("pos", "DS")  # 기본 DS
+
+        w1_rot = data.get("wheel_1st_rotation", 0)
+        w1_pos = data.get("wheel_1st_position", 0)
+        w2_rot = data.get("wheel_2nd_rotation", 0)
+        w2_pos = data.get("wheel_2nd_position", 0)
+
+        if not car_no:
+            return
+
+        # 상태 판정
+        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
+
+        # 라벨에 상태 표시
+        label_str = f"{car_no} {pos} : {status_text}"
+        self.msg_7.setText(label_str)
+        self.msg_7.setStyleSheet(f"background-color: {self._wheel_color_for_status(status_text)}; color: black;")
+
+        # 테이블 반영
+        try:
+            self._update_wheel_status_in_table(
+                car_no=str(car_no),
+                pos=str(pos) if pos is not None else "DS",
+                w1_rot=w1_rot,
+                w1_pos=w1_pos,
+                w2_rot=w2_rot,
+                w2_pos=w2_pos,
+            )
+        except Exception as e:
+            print("update_ui_wheel2 error:", e)
+
 
     # ================================================================
     # START / END 처리 (1번 구간)
@@ -610,10 +708,12 @@ class MainWindow(QMainWindow):
         setcol(2, f"{rec['ds1_db']:.2f}", rec["ds1_db"])
         setcol(3, f"{rec['ws2_db']:.2f}", rec["ws2_db"])
         setcol(4, f"{rec['ds2_db']:.2f}", rec["ds2_db"])
-        setcol(5, "")  # Wheel 상태 (나중에 확장)
+        setcol(5, "")  # WS휠 상태
+        setcol(6, "")  # DS휠 상태
 
         if self.tableWidget.rowCount() > self.max_table_rows:
             self.tableWidget.removeRow(self.tableWidget.rowCount() - 1)
+
 
     def _repaint_table(self):
         rows = self.tableWidget.rowCount()
@@ -669,6 +769,109 @@ class MainWindow(QMainWindow):
             else:
                 btn.setStyleSheet(f"background-color: {color}; color: black;")
 
+
+    # ================================================================
+    # 휠 상태 판단 / 테이블 반영
+    # ================================================================
+    def _judge_one_wheel(self, rot, pos):
+        """
+        rot: 0/1/2, pos: 0/1/2
+        return: "정상" / "탈락" / "인식 실패"
+        """
+        try:
+            r = int(rot)
+            p = int(pos)
+        except Exception:
+            return "인식 실패"
+
+        # 하나라도 비정상이면 탈락
+        if r == 2 or p == 2:
+            return "탈락"
+        # 비정상은 없지만 감지 실패가 있으면 인식 실패
+        if r == 0 or p == 0:
+            return "인식 실패"
+        # 둘 다 1인 경우
+        return "정상"
+
+    def _summary_two_wheels(self, r1, p1, r2, p2):
+        """
+        두 휠(1st, 2nd)을 종합해서 대차 전체 휠 상태 하나로 요약
+        """
+        s1 = self._judge_one_wheel(r1, p1)
+        s2 = self._judge_one_wheel(r2, p2)
+
+        # 우선순위: 탈락 > 인식 실패 > 정상
+        if "탈락" in (s1, s2):
+            return "탈락"
+        if "인식 실패" in (s1, s2):
+            return "인식 실패"
+        return "정상"
+
+    def _wheel_color_for_status(self, status_text: str):
+        """
+        휠 상태별 색상 (배경)
+        """
+        if status_text == "정상":
+            return "#67E467"   # 초록
+        if status_text == "탈락":
+            return "#EB5E5E"   # 빨강
+        if status_text == "인식 실패":
+            return "#E7E55F"   # 노랑(경고)
+        return "#FFFFFF"       # 기타
+
+    def _set_wheel_cell(self, row: int, col: int, status_text: str):
+        """
+        tableWidget 의 (row, col)에 휠 상태 텍스트 + 색 적용
+        col: 5 -> WS휠, 6 -> DS휠
+        """
+        item = self.tableWidget.item(row, col)
+        if item is None:
+            item = QTableWidgetItem()
+            self.tableWidget.setItem(row, col, item)
+
+        item.setText(status_text)
+        item.setBackground(QColor(self._wheel_color_for_status(status_text)))
+        item.setForeground(QColor("black"))
+
+    def _update_wheel_status_in_table(self, car_no: str, pos: str,
+                                      w1_rot, w1_pos, w2_rot, w2_pos):
+        """
+        cam2(WS/DS) 에서 받은 wheel 상태를 테이블에 반영
+        car_no : "108" 같은 3자리 문자열
+        pos    : "WS" or "DS" (어느 쪽 휠인지)
+        """
+        if not car_no:
+            return
+
+        # 테이블에서 car_no가 같은 row 찾기
+        rows = self.tableWidget.rowCount()
+        target_row = None
+        for r in range(rows):
+            item_car = self.tableWidget.item(r, 0)
+            if item_car is None:
+                continue
+            if item_car.text().strip() == str(car_no).strip():
+                target_row = r
+                break
+
+        # 아직 그 대차 row가 없으면 그냥 무시
+        if target_row is None:
+            return
+
+        # 2개 휠 종합해서 상태 텍스트 만들기
+        status_text = self._summary_two_wheels(w1_rot, w1_pos, w2_rot, w2_pos)
+
+        # pos 에 따라 WS휠(5), DS휠(6) 컬럼 선택
+        if pos == "WS":
+            col = 5
+        elif pos == "DS":
+            col = 6
+        else:
+            col = 5  # 혹시 이상한 값 들어오면 그냥 WS쪽으로
+
+        self._set_wheel_cell(target_row, col, status_text)
+
+
     # ================================================================
     # 임계값 재정렬
     # ================================================================
@@ -704,8 +907,7 @@ class MainWindow(QMainWindow):
             self.db_writer.enqueue(rec)
 
         for w in [
-            self.zmq_thread,
-            self.zmq_thread2,
+            self.zmq_thread,self.zmq_thread2,self.zmq_thread3,
             self.rtspA1, self.rtspB1, self.rtspA2, self.rtspB2,
             self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2
         ]:
