@@ -3,7 +3,7 @@
 import torch
 
 IMAGE_DIR     = "/home/kaisys/Project/image"
-FPS           = 2
+FPS           = 1
 JPEG_QUALITY  = 80
 
 CFG_PATH      = "/home/kaisys/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
