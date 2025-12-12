@@ -11,9 +11,11 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QListWidgetItem, QMessageBox,
     QToolBar, QLineEdit, QPushButton, QWidgetAction
 )
+    # PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtCore import Qt
 
+from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
 
 # 작업 디렉토리 고정
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -25,40 +27,8 @@ DB_PASSWORD = "0000"
 DB_NAME = "posco"
 TABLE_NAME = "data"
 
-# ==== 임계값 설정 JSON ====
-THRESHOLDS_JSON = os.path.join(os.path.dirname(__file__), "thresholds.json")
-DEFAULT_THRESHOLDS = {"weak": 3.0, "mid": 4.0, "strong": 5.0, "min": 0.0}
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_PATH = os.path.join(BASE_DIR, "ui", "window_check.ui")
-
-# ─────────────────────────────────────
-# 임계값 로드/저장
-# ─────────────────────────────────────
-def load_thresholds():
-    try:
-        with open(THRESHOLDS_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        out = DEFAULT_THRESHOLDS.copy()
-        for k in out.keys():
-            if k in data:
-                out[k] = float(data[k])
-        # weak ≤ mid ≤ strong 보정
-        w, m, s = sorted([out["weak"], out["mid"], out["strong"]])
-        out["weak"], out["mid"], out["strong"] = w, m, s
-        return out
-    except Exception:
-        return DEFAULT_THRESHOLDS.copy()
-
-
-def save_thresholds_to_json(th):
-    try:
-        tmp = THRESHOLDS_JSON + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(th, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, THRESHOLDS_JSON)
-    except Exception as e:
-        print("[WARN] thresholds.json 저장 실패:", e)
 
 
 # ─────────────────────────────────────
@@ -69,19 +39,20 @@ class WindowClass(QMainWindow):
         super().__init__()
         uic.loadUi(UI_PATH, self)
 
-        # 이미지 라벨 기본 설정 (image_1~5)
-        for name in ("image_1", "image_2", "image_3", "image_4", "image_5"):
+        # 이미지 라벨 기본 설정 (image_1~7)
+        for name in ("image_1", "image_2", "image_3", "image_4", "image_5", "image_6", "image_7"):
             if hasattr(self, name):
                 w = getattr(self, name)
                 w.setAlignment(Qt.AlignCenter)
                 w.setScaledContents(True)
 
-        # 임계값 로드
-        self.thresholds = load_thresholds()
-        self.v_strong = self.thresholds["strong"]
-        self.v_mid = self.thresholds["mid"]
-        self.v_weak = self.thresholds["weak"]
-        self.v_min = self.thresholds.get("min", 0.0)
+        # 임계값 로드 (HMI와 동일한 JSON 사용)
+        self.thresholds = load_thresholds_from_json()
+        self.v_strong = float(self.thresholds.get("strong", 5.0))
+        self.v_mid    = float(self.thresholds.get("mid", 4.0))
+        self.v_weak   = float(self.thresholds.get("weak", 3.0))
+        self.v_min    = float(self.thresholds.get("min", 0.0))
+
 
         # UI에 임계값 표시용 lineEdit 있으면 채워줌
         if hasattr(self, "lineEdit_2"):
@@ -209,7 +180,10 @@ class WindowClass(QMainWindow):
                 sql = f"""
                     SELECT id, ts, car_no,
                            ws1_db, ds1_db, ws2_db, ds2_db,
-                           img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path
+                           img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path,
+                           ws_wheel1_status, ws_wheel2_status,
+                           ds_wheel1_status, ds_wheel2_status,
+                           img_ws_wheel_path, img_ds_wheel_path
                     FROM `{TABLE_NAME}`
                     WHERE car_no = %s
                     ORDER BY id DESC
@@ -223,7 +197,10 @@ class WindowClass(QMainWindow):
                 sql = f"""
                     SELECT id, ts, car_no,
                            ws1_db, ds1_db, ws2_db, ds2_db,
-                           img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path
+                           img_car_path, img_ws1_path, img_ds1_path, img_ws2_path, img_ds2_path,
+                           ws_wheel1_status, ws_wheel2_status,
+                           ds_wheel1_status, ds_wheel2_status,
+                           img_ws_wheel_path, img_ds_wheel_path
                     FROM `{TABLE_NAME}`
                     WHERE car_no = %s
                       AND DATE(ts) = %s
@@ -252,9 +229,12 @@ class WindowClass(QMainWindow):
         # 리스트: 대차 이미지 경로 기준으로 표시
         for r in self._rows_cache:
             # 인덱스 매핑:
-            # 0:id, 1:ts, 2:car_no,
-            # 3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
-            # 7:img_cam1, 8:img_ws1, 9:img_ds1, 10:img_ws2, 11:img_ds2
+            #  0:id, 1:ts, 2:car_no,
+            #  3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
+            #  7:img_car_path, 8:img_ws1_path, 9:img_ds1_path, 10:img_ws2_path, 11:img_ds2_path,
+            # 12:ws_wheel1_status, 13:ws_wheel2_status,
+            # 14:ds_wheel1_status, 15:ds_wheel2_status,
+            # 16:img_ws_wheel_path, 17:img_ds_wheel_path
             car_img = r[7] or ""
             text = car_img if car_img else "(대차이미지 없음)"
             if hasattr(self, "listWidget"):
@@ -328,9 +308,12 @@ class WindowClass(QMainWindow):
             row = self._rows_cache[0]
 
         # 인덱스 매핑 재확인:
-        # 0:id, 1:ts, 2:car_no,
-        # 3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
-        # 7:img_cam1, 8:img_ws1, 9:img_ds1, 10:img_ws2, 11:img_ds2
+        #  0:id, 1:ts, 2:car_no,
+        #  3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
+        #  7:img_car_path, 8:img_ws1_path, 9:img_ds1_path, 10:img_ws2_path, 11:img_ds2_path,
+        # 12:ws_wheel1_status, 13:ws_wheel2_status,
+        # 14:ds_wheel1_status, 15:ds_wheel2_status,
+        # 16:img_ws_wheel_path, 17:img_ds_wheel_path
 
         ts_val = row[1]
         car_no = str(row[2] or "")
@@ -357,6 +340,13 @@ class WindowClass(QMainWindow):
         img_ws2 = row[10] or ""
         img_ds2 = row[11] or ""
 
+        ws_wheel1_status = row[12] or ""
+        ws_wheel2_status = row[13] or ""
+        ds_wheel1_status = row[14] or ""
+        ds_wheel2_status = row[15] or ""
+        img_ws_wheel = row[16] or ""
+        img_ds_wheel = row[17] or ""
+
         # 라벨에 기본 값 표시
         if hasattr(self, "time_label"):
             self.time_label.setText(date_str)
@@ -375,6 +365,20 @@ class WindowClass(QMainWindow):
         self._show_image_to_label("image_3", img_ds1)
         self._show_image_to_label("image_4", img_ws2)
         self._show_image_to_label("image_5", img_ds2)
+
+        # 🔹 휠 이미지 표시
+        self._show_image_to_label("image_6", img_ws_wheel)  # WS 휠 이미지
+        self._show_image_to_label("image_7", img_ds_wheel)  # DS 휠 이미지
+
+        # 🔹 휠 상태 텍스트 표시
+        if hasattr(self, "wheel_label1"):
+            self.wheel_label1.setText(str(ws_wheel1_status))
+        if hasattr(self, "wheel_label4"):
+            self.wheel_label4.setText(str(ws_wheel2_status))
+        if hasattr(self, "wheel_label2"):
+            self.wheel_label2.setText(str(ds_wheel1_status))
+        if hasattr(self, "wheel_label3"):
+            self.wheel_label3.setText(str(ds_wheel2_status))
 
     # ─────────────────────────────────────
     # 임계값 버튼 클릭 시 (선택사항)

@@ -393,7 +393,6 @@ class MainWindow(QMainWindow):
         # 문자열로 정리
         if isinstance(text, str):
             text_str = text
-            print(text_str)
         else:
             try:
                 text_str = text.decode("utf-8") if isinstance(text, (bytes, bytearray)) else str(text)

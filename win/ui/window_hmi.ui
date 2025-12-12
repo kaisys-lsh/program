@@ -4113,43 +4113,12 @@ color: rgb(255, 255, 0);</string>
      <set>Qt::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QLabel" name="label_2">
-    <property name="geometry">
-     <rect>
-      <x>30</x>
-      <y>810</y>
-      <width>311</width>
-      <height>29</height>
-     </rect>
-    </property>
-    <property name="font">
-     <font>
-      <family>맑은 고딕</family>
-      <pointsize>15</pointsize>
-      <weight>75</weight>
-      <bold>true</bold>
-     </font>
-    </property>
-    <property name="styleSheet">
-     <string notr="true">background-color: rgb(0, 0, 117);
-color: rgb(255, 255, 255);</string>
-    </property>
-    <property name="frameShape">
-     <enum>QFrame::NoFrame</enum>
-    </property>
-    <property name="text">
-     <string>범례표시</string>
-    </property>
-    <property name="alignment">
-     <set>Qt::AlignCenter</set>
-    </property>
-   </widget>
    <widget class="QLabel" name="label_11">
     <property name="geometry">
      <rect>
-      <x>30</x>
-      <y>841</y>
-      <width>110</width>
+      <x>40</x>
+      <y>830</y>
+      <width>91</width>
       <height>29</height>
      </rect>
     </property>
@@ -4178,9 +4147,9 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="label_17">
     <property name="geometry">
      <rect>
-      <x>30</x>
+      <x>40</x>
       <y>872</y>
-      <width>110</width>
+      <width>91</width>
       <height>32</height>
      </rect>
     </property>
@@ -4206,7 +4175,7 @@ color: rgb(0, 0, 0);</string>
      <number>1</number>
     </property>
     <property name="text">
-     <string> 심각 누풍</string>
+     <string>심각</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignCenter</set>
@@ -4215,9 +4184,9 @@ color: rgb(0, 0, 0);</string>
    <widget class="QLabel" name="label_18">
     <property name="geometry">
      <rect>
-      <x>30</x>
+      <x>40</x>
       <y>905</y>
-      <width>110</width>
+      <width>91</width>
       <height>32</height>
      </rect>
     </property>
@@ -4243,7 +4212,7 @@ color: rgb(0, 0, 0);</string>
      <number>1</number>
     </property>
     <property name="text">
-     <string>강한 누풍</string>
+     <string>강한</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignCenter</set>
@@ -4252,9 +4221,9 @@ color: rgb(0, 0, 0);</string>
    <widget class="QLabel" name="label_19">
     <property name="geometry">
      <rect>
-      <x>30</x>
+      <x>40</x>
       <y>938</y>
-      <width>110</width>
+      <width>91</width>
       <height>32</height>
      </rect>
     </property>
@@ -4280,7 +4249,7 @@ color: rgb(0, 0, 0);</string>
      <number>1</number>
     </property>
     <property name="text">
-     <string>약한 누풍</string>
+     <string>약한</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignCenter</set>
@@ -4289,9 +4258,9 @@ color: rgb(0, 0, 0);</string>
    <widget class="QLabel" name="label_30">
     <property name="geometry">
      <rect>
-      <x>144</x>
-      <y>841</y>
-      <width>142</width>
+      <x>140</x>
+      <y>830</y>
+      <width>111</width>
       <height>28</height>
      </rect>
     </property>
@@ -4320,9 +4289,9 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLineEdit" name="lineEdit_2">
     <property name="geometry">
      <rect>
-      <x>145</x>
-      <y>871</y>
-      <width>140</width>
+      <x>140</x>
+      <y>870</y>
+      <width>111</width>
       <height>32</height>
      </rect>
     </property>
@@ -4345,9 +4314,9 @@ color: rgb(0, 0, 0);</string>
    <widget class="QLineEdit" name="lineEdit_3">
     <property name="geometry">
      <rect>
-      <x>145</x>
+      <x>140</x>
       <y>904</y>
-      <width>140</width>
+      <width>111</width>
       <height>32</height>
      </rect>
     </property>
@@ -4370,9 +4339,9 @@ color: rgb(0, 0, 0);</string>
    <widget class="QLineEdit" name="lineEdit_4">
     <property name="geometry">
      <rect>
-      <x>145</x>
+      <x>140</x>
       <y>937</y>
-      <width>140</width>
+      <width>111</width>
       <height>32</height>
      </rect>
     </property>
@@ -4395,10 +4364,10 @@ color: rgb(0, 0, 0);</string>
    <widget class="QPushButton" name="pushButton_2">
     <property name="geometry">
      <rect>
-      <x>290</x>
-      <y>840</y>
-      <width>50</width>
-      <height>131</height>
+      <x>260</x>
+      <y>870</y>
+      <width>41</width>
+      <height>101</height>
      </rect>
     </property>
     <property name="font">
@@ -4410,8 +4379,8 @@ color: rgb(0, 0, 0);</string>
      </font>
     </property>
     <property name="styleSheet">
-     <string notr="true">background-color: rgb(0, 0, 117);
-color: rgb(255, 255, 255);</string>
+     <string notr="true">color: rgb(0, 0, 0);
+background-color: rgb(255, 255, 255);</string>
     </property>
     <property name="text">
      <string>변경</string>
@@ -5353,6 +5322,93 @@ background-color: rgb(255, 255, 255);</string>
      <set>Qt::AlignCenter</set>
     </property>
    </widget>
+   <widget class="QLabel" name="label">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>820</y>
+      <width>281</width>
+      <height>161</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">background-color: rgb(0, 0, 117);
+color: rgb(255, 255, 255);</string>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_9">
+    <property name="geometry">
+     <rect>
+      <x>330</x>
+      <y>896</y>
+      <width>90</width>
+      <height>51</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">background-color: rgb(221, 221, 0);</string>
+    </property>
+    <property name="text">
+     <string>wheel 건전성</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_31">
+    <property name="geometry">
+     <rect>
+      <x>329</x>
+      <y>823</y>
+      <width>91</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="font">
+     <font>
+      <family>맑은 고딕</family>
+      <pointsize>12</pointsize>
+      <weight>75</weight>
+      <bold>true</bold>
+     </font>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">background-color: rgb(0, 0, 117);
+color: rgb(255, 255, 255);</string>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::NoFrame</enum>
+    </property>
+    <property name="text">
+     <string>버튼 예시</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_5">
+    <property name="geometry">
+     <rect>
+      <x>330</x>
+      <y>859</y>
+      <width>90</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">background-color: rgb(71, 213, 0);</string>
+    </property>
+    <property name="text">
+     <string>누풍 및 대차</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignCenter</set>
+    </property>
+   </widget>
+   <zorder>label</zorder>
    <zorder>label_7</zorder>
    <zorder>tableWidget</zorder>
    <zorder>name_1</zorder>
@@ -5517,7 +5573,6 @@ background-color: rgb(255, 255, 255);</string>
    <zorder>N_10</zorder>
    <zorder>label_6</zorder>
    <zorder>label_8</zorder>
-   <zorder>label_2</zorder>
    <zorder>label_11</zorder>
    <zorder>label_17</zorder>
    <zorder>label_18</zorder>
@@ -5564,6 +5619,9 @@ background-color: rgb(255, 255, 255);</string>
    <zorder>label_16</zorder>
    <zorder>msg_8</zorder>
    <zorder>msg_9</zorder>
+   <zorder>label_9</zorder>
+   <zorder>label_31</zorder>
+   <zorder>label_5</zorder>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
