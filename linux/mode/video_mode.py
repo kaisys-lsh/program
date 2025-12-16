@@ -48,11 +48,12 @@ def open_capture(url):
     return cap
 
 
-def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, shm_ds_array):
+def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array, shm_ds_array):
     """
     RTSP_URL 에서 영상 프레임을 읽어서
-    이미지 버전과 동일한 상태 머신으로 처리.
+    동일한 상태 머신으로 처리.
     + 번호 인식이 끝났을 때 WS/DS 공유메모리에 번호 3자리 기록.
+    + ZMQ로는 '번호 문자열만' 전송 (START / 3자리 / NONE)
     """
     if config.FPS > 0:
         frame_interval = 1.0 / config.FPS
@@ -83,7 +84,6 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
           ", CUDA =", use_cuda)
 
     frame_idx = 0
-
     mark_ready = False
     in_wagon = False
     no_digit_frames = 0
@@ -117,9 +117,7 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
             img = cv2.resize(img, (960, 540))
             img_h, img_w = img.shape[0], img.shape[1]
 
-            run_detect = False
-            if frame_idx % config.DETECT_INTERVAL_FRAMES == 0:
-                run_detect = True
+            run_detect = (frame_idx % config.DETECT_INTERVAL_FRAMES == 0)
 
             send_code = ""
 
@@ -147,60 +145,12 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
                 else:
                     num_instances = instances
 
+                # 숫자 영역 필터링 (잡음 제거)
                 num_instances = filter_digit_region(num_instances, img_h, img_w)
 
-                i = 0
-                while i < len(num_instances):
-                    box_tensor = num_instances.pred_boxes.tensor[i]
-                    box = box_tensor.numpy().astype(int)
-
-                    x1 = int(box[0])
-                    y1 = int(box[1])
-                    x2 = int(box[2])
-                    y2 = int(box[3])
-
-                    cls_id = int(num_instances.pred_classes[i])
-                    ch = decode_label_char(cls_id, metadata)
-
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(
-                        img,
-                        ch,
-                        (x1, max(y1 - 10, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2,
-                        (0, 255, 0),
-                        2,
-                    )
-
-                    i = i + 1
-
-                if mark_instances is not None:
-                    j = 0
-                    while j < len(mark_instances):
-                        box_tensor = mark_instances.pred_boxes.tensor[j]
-                        box = box_tensor.numpy().astype(int)
-
-                        x1 = int(box[0])
-                        y1 = int(box[1])
-                        x2 = int(box[2])
-                        y2 = int(box[3])
-
-                        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        cv2.putText(
-                            img,
-                            "M",
-                            (x1, max(y1 - 10, 20)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.2,
-                            (0, 0, 255),
-                            2,
-                        )
-
-                        j = j + 1
-
-                # ---- 여기부터 상태 머신은 이미지 버전과 완전히 동일 ----
-
+                # -------------------------------
+                # 상태 머신 (mark / START / END)
+                # -------------------------------
                 if not in_wagon:
                     if (not mark_ready) and mark_present:
                         mark_ready = True
@@ -211,9 +161,10 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
                         no_digit_frames = 0
                         send_code = "START"
                         print("[WAGON] START")
+
                 else:
                     if len(num_instances) == 0:
-                        no_digit_frames = no_digit_frames + 1
+                        no_digit_frames += 1
                     else:
                         no_digit_frames = 0
                         update_slots_with_instances(slots, num_instances, metadata)
@@ -223,57 +174,37 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
                         send_code = final_code
                         print("[WAGON] END →", final_code)
 
-                        # ───────────────────────────────
-                        # 🔹 대차 번호를 WS / DS 공유메모리에 기록
-                        # ───────────────────────────────
+                        # 공유메모리 기록
                         if final_code != "NONE":
                             if shm_ws_array is not None:
-                                write_car_number(
-                                    shm_ws_array,
-                                    final_code,
-                                    block=False
-                                )
+                                write_car_number(shm_ws_array, final_code, block=False)
                             if shm_ds_array is not None:
-                                write_car_number(
-                                    shm_ds_array,
-                                    final_code,
-                                    block=False
-                                )
+                                write_car_number(shm_ds_array, final_code, block=False)
 
+                        # 상태 초기화
                         in_wagon = False
                         mark_ready = False
                         slots = init_slots()
                         no_digit_frames = 0
 
-
+                # 메모리 정리
                 del outputs
                 del instances
                 del num_instances
+                del mark_instances
 
-            ok, jpg_buf = cv2.imencode(
-                ".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), config.JPEG_QUALITY]
-            )
-            if not ok:
-                frame_idx = frame_idx + 1
-                continue
+            # ✅ 번호만 ZMQ로 전송 (빈 메시지 안 보냄)
+            if send_code:
+                sock.send_string(send_code)  # "START" / "123" / "NONE"
+                print("[SEND] code='{}'".format(send_code))
 
-            if send_code or config.EMPTY_CODE_OK:
-                if send_code:
-                    code_bytes = send_code.encode("utf-8")
-                else:
-                    code_bytes = b""
-
-                sock.send_multipart([code_bytes, jpg_buf.tobytes()])
-
-                if send_code:
-                    print("[SEND] code='{}'".format(send_code))
-
+            # FPS 맞추기
             elapsed = time.time() - t0
             remain = frame_interval - elapsed
             if remain > 0:
                 time.sleep(remain)
 
-            frame_idx = frame_idx + 1
+            frame_idx += 1
 
     except KeyboardInterrupt:
         print("\n[VIDEO MODE] KeyboardInterrupt -> 종료")
@@ -285,7 +216,6 @@ def run_video_mode(predictor, metadata, mark_class_idx, ctx, sock,shm_ws_array, 
         except:
             pass
 
-        # ★ 공유메모리는 close만 하고 unlink는 하지 않는다.
         try:
             if shm_ws is not None:
                 shm_ws.close()
