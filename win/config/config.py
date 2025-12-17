@@ -25,6 +25,12 @@ STRUCT_SIZE = struct.calcsize(STRUCT_FORMAT)
 CRY_USER = "admin"
 CRY_PW = "crysound"
 
+# 대차 장비
+CRY_CAM_IP = "192.168.11.88"
+CRY_CAM_PORT = 90
+RTSP_CAM_IP = "rtsp://192.168.11.88:8554/live/test"
+CRY_CAM_USE_HTTPS = False
+
 # W/S 누풍 장비1
 CRY_A1_IP = "192.168.11.88"
 CRY_A1_PORT = 90

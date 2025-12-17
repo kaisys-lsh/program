@@ -32,7 +32,7 @@ from utils.image_utils import (
     ws_wheel1_path, ds_wheel1_path,
     save_bgr_image_to_file
 )
-from utils.db_writer import DbWriterThread
+from win.workers.db_writer import DbWriterThread
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi.ui")

@@ -14,15 +14,15 @@ from PyQt5.QtCore import Qt, QCoreApplication, QTimer
 from PyQt5.QtGui import QPixmap, QColor
 
 from config.config import (
-    DB_HOST, DB_PORT, DB_USER, DB_PW,
-    CRY_USER, CRY_PW,
+    DB_HOST, DB_PORT, DB_USER, DB_PW, CRY_USER, CRY_PW,
     CRY_A1_IP, CRY_A1_PORT, CRY_A1_USE_HTTPS,
     CRY_B1_IP, CRY_B1_PORT, CRY_B1_USE_HTTPS,
     CRY_A2_IP, CRY_A2_PORT, CRY_A2_USE_HTTPS,
     CRY_B2_IP, CRY_B2_PORT, CRY_B2_USE_HTTPS,
     CRY_INTERVAL_SEC, CRY_TIMEOUT_SEC,
     PULL_CONNECT1, PULL_CONNECT2, PULL_CONNECT3, 
-    RTSP_A1_IP, RTSP_B1_IP, RTSP_A2_IP, RTSP_B2_IP)
+    RTSP_A1_IP, RTSP_B1_IP, RTSP_A2_IP, RTSP_B2_IP, 
+    RTSP_C1_IP, RTSP_C2_IP, RTSP_CAM_IP)
 
 from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
 from utils.image_utils import (
@@ -32,10 +32,10 @@ from utils.image_utils import (
     ws_wheel1_path, ds_wheel1_path,
     save_bgr_image_to_file
 )
-from utils.db_writer import DbWriterThread
+from workers.db_writer import DbWriterThread
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi.ui")
+UI_PATH = os.path.join(BASE_DIR, "ui", "test_hmi.ui")
 USE_DUMMY_CRY = True 
 USE_DUMMY_CAMERA = True
 
@@ -155,21 +155,24 @@ class MainWindow(QMainWindow):
         # ZMQ 
         # ============================================================
         self.zmq_thread = ZmqRecvThread(PULL_CONNECT1, parent=self)
-        self.zmq_thread.frame_ready.connect(self.update_ui_cam)
+        self.zmq_thread.text_ready.connect(self.update_ui_cam)
         self.zmq_thread.start()
 
         self.zmq_thread2 = ZmqRecvThread(PULL_CONNECT2, parent=self)
-        self.zmq_thread2.frame_ready.connect(self.update_ui_wheel1)
+        self.zmq_thread2.text_ready.connect(self.update_ui_wheel1)
         self.zmq_thread2.start()
 
         self.zmq_thread3 = ZmqRecvThread(PULL_CONNECT3, parent=self)
-        self.zmq_thread3.frame_ready.connect(self.update_ui_wheel2)
+        self.zmq_thread3.text_ready.connect(self.update_ui_wheel2)
         self.zmq_thread3.start()
-
 
         # ============================================================
         # RTSP threads
         # ============================================================
+        self.rtspCAM1 = RtspThread(RTSP_CAM_IP, name="CAM1", parent=self)
+        self.rtspCAM1.frame_ready.connect(self.update_cam_frame)
+        self.rtspCAM1.start()
+
         self.rtspA1 = RtspThread(RTSP_A1_IP, name="WS1", parent=self)
         self.rtspA1.frame_ready.connect(self.update_ws1_frame)
         self.rtspA1.start()
@@ -185,6 +188,14 @@ class MainWindow(QMainWindow):
         self.rtspB2 = RtspThread(RTSP_B2_IP, name="DS2", parent=self)
         self.rtspB2.frame_ready.connect(self.update_ds2_frame)
         self.rtspB2.start()
+
+        self.rtsp_wheel1 = RtspThread(RTSP_C1_IP, name="Wheel_WS", parent=self)
+        self.rtsp_wheel1.frame_ready.connect(self.update_wheel1_frame)
+        self.rtsp_wheel1.start()
+
+        self.rtsp_wheel2 = RtspThread(RTSP_C2_IP, name="Wheel_DS", parent=self)
+        self.rtsp_wheel2.frame_ready.connect(self.update_wheel2_frame)
+        self.rtsp_wheel2.start()
 
         # ============================================================
         # CRY dB threads — WS1/DS1/WS2/DS2 각각 따로
@@ -281,6 +292,10 @@ class MainWindow(QMainWindow):
     # ================================================================
     # 프레임 업데이트
     # ================================================================
+    def update_cam_frame(self, qimg, bgr):
+        set_label_pixmap_fill(self.image_1, QPixmap.fromImage(qimg))
+        self.latest_frame_ws1_bgr = bgr
+
     def update_ws1_frame(self, qimg, bgr):
         set_label_pixmap_fill(self.image_2, QPixmap.fromImage(qimg))
         self.latest_frame_ws1_bgr = bgr
@@ -295,6 +310,15 @@ class MainWindow(QMainWindow):
 
     def update_ds2_frame(self, qimg, bgr):
         set_label_pixmap_fill(self.image_5, QPixmap.fromImage(qimg))
+        self.latest_frame_ds2_bgr = bgr
+
+    #W/S
+    def update_wheel1_frame(self, qimg, bgr):
+        set_label_pixmap_fill(self.image_6, QPixmap.fromImage(qimg))
+        self.latest_frame_ds2_bgr = bgr
+    #D/S
+    def update_wheel2_frame(self, qimg, bgr):
+        set_label_pixmap_fill(self.image_7, QPixmap.fromImage(qimg))
         self.latest_frame_ds2_bgr = bgr
 
     # ================================================================
@@ -356,53 +380,30 @@ class MainWindow(QMainWindow):
     # ================================================================
     # ZMQ (AI 번호 + cam1) - START/END 신호 처리
     # ================================================================
-    def update_ui_cam(self, qimg, bgr, text):
-        # cam1 실시간 영상 표시
-        set_label_pixmap_fill(self.image_1, QPixmap.fromImage(qimg))
-        self.latest_frame_cam1_bgr = bgr
-
-        # 문자열 정리
-        raw = ""
-        if isinstance(text, str):
-            raw = text.strip()
-
-        # 코드가 아예 없으면: 영상만 갱신(번호는 유지)
+    def update_ui_cam(self, text: str):
+        raw = text.strip()
         if not raw:
             return
 
-        # START 신호: 1번 구간 시작
         if raw == "START":
             self._on_wagon_start()
             return
 
-        # END 신호: "NONE" 또는 3자리 숫자
         if raw == "NONE" or re.fullmatch(r"\d{3}", raw):
             self._on_wagon_end(raw)
             return
 
-        # 혹시 다른 형식으로 3자리 숫자가 섞여 있는 경우
         m = re.search(r"\b(\d{3})\b", raw)
         if m:
             self._on_wagon_end(m.group(1))
+
+    
+    def update_ui_wheel1(self, text: str):
+        # ZMQ 텍스트(JSON)만 받는다
+        if not isinstance(text, str):
             return
 
-        # 그 외 텍스트는 무시
-        return
-    
-    def update_ui_wheel1(self, qimg, bgr, text):
-        #  휠 WS
-        set_label_pixmap_fill(self.image_6, QPixmap.fromImage(qimg))
-        self.latest_frame_cam2_bgr = bgr
-
-        # 문자열로 정리
-        if isinstance(text, str):
-            text_str = text
-        else:
-            try:
-                text_str = text.decode("utf-8") if isinstance(text, (bytes, bytearray)) else str(text)
-            except Exception:
-                text_str = ""
-
+        text_str = text.strip()
         if not text_str:
             return
 
@@ -412,7 +413,6 @@ class MainWindow(QMainWindow):
         except Exception:
             return
 
-        # type 체크 (안 맞으면 무시)
         if data.get("type") != "wheel_status":
             return
 
@@ -429,25 +429,26 @@ class MainWindow(QMainWindow):
 
         car_no_str = str(car_no).strip()
 
-        # === 여기서 상태 판정 ===
+        # 상태 판정
         status_1st = self._judge_one_wheel(w1_rot, w1_pos)
         status_2nd = self._judge_one_wheel(w2_rot, w2_pos)
 
-        # 라벨에 휠별 상태 표시 (색은 넣지 않음)
+        # 라벨 업데이트
         self.msg_4.setText(f"1st:{status_1st}")
         self.msg_8.setText(f"2nd:{status_2nd}")
 
-        # 🔹 WS 휠 상태를 car_no 기준으로 저장
+        # WS 휠 상태 저장
         self.ws_wheel_status_map[car_no_str] = (status_1st, status_2nd)
 
-        # 🔹 WS 휠 이미지: 아직 이 대차에 대해 안 저장했을 때만 1장 저장
+        # ✅ 휠 이미지 저장: ZMQ로 이미지가 안 오므로 "최근 RTSP 프레임" 저장
+        bgr = getattr(self, "latest_frame_wheel1_bgr", None)
         if bgr is not None and car_no_str not in self.ws_wheel_image_map:
             ts = datetime.now()
             path_ws = ws_wheel1_path(ts, car_no_str)
             if save_bgr_image_to_file(bgr, path_ws):
                 self.ws_wheel_image_map[car_no_str] = path_ws
 
-        # 테이블에도 반영
+        # 테이블 반영
         try:
             self._update_wheel_status_in_table(
                 car_no=str(car_no),
@@ -463,20 +464,12 @@ class MainWindow(QMainWindow):
 
 
 
-    def update_ui_wheel2(self, qimg, bgr, text):
-        # 휠 DS
-        set_label_pixmap_fill(self.image_7, QPixmap.fromImage(qimg))
-        self.latest_frame_cam3_bgr = bgr
 
-        # 문자열로 정리
-        if isinstance(text, str):
-            text_str = text
-        else:
-            try:
-                text_str = text.decode("utf-8") if isinstance(text, (bytes, bytearray)) else str(text)
-            except Exception:
-                text_str = ""
+    def update_ui_wheel2(self, text: str):
+        if not isinstance(text, str):
+            return
 
+        text_str = text.strip()
         if not text_str:
             return
 
@@ -502,18 +495,19 @@ class MainWindow(QMainWindow):
 
         car_no_str = str(car_no).strip()
 
-        # 휠별 상태 판정
+        # 상태 판정
         status_1st = self._judge_one_wheel(w1_rot, w1_pos)
         status_2nd = self._judge_one_wheel(w2_rot, w2_pos)
 
-        # 라벨에 휠별 상태 표시 (색 없음)
+        # 라벨 업데이트
         self.msg_7.setText(f"1st:{status_1st}")
         self.msg_9.setText(f"2nd:{status_2nd}")
 
-        # 🔹 DS 휠 상태 저장
+        # DS 휠 상태 저장
         self.ds_wheel_status_map[car_no_str] = (status_1st, status_2nd)
 
-        # 🔹 DS 휠 이미지 저장 (대차당 1장)
+        # ✅ DS 휠 이미지 저장: 최근 RTSP 프레임을 저장
+        bgr = getattr(self, "latest_frame_wheel2_bgr", None)
         if bgr is not None and car_no_str not in self.ds_wheel_image_map:
             ts = datetime.now()
             path_ds = ds_wheel1_path(ts, car_no_str)
@@ -532,6 +526,7 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             print("update_ui_wheel2 error:", e)
+
 
 
 
@@ -1112,7 +1107,8 @@ class MainWindow(QMainWindow):
         for w in [
             self.zmq_thread,self.zmq_thread2,self.zmq_thread3,
             self.rtspA1, self.rtspB1, self.rtspA2, self.rtspB2,
-            self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2
+            self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2,
+            self.rtsp_wheel1, self.rtsp_wheel2, self.rtspCAM1
         ]:
             try:
                 w.stop()
