@@ -172,3 +172,23 @@ def write_car_number(status_array,
 
     print("[SHM] 대차 번호 기록 완료 →", digits)
     return True
+
+
+def read_wheel_status_packet(status_array):
+    """
+    공유메모리에서 wheel 상태 패킷 읽기
+    (flag=1일 때만 호출해야 함)
+
+    return dict
+    """
+    car_no = "".join(chr(status_array[i]) for i in range(11, 14))
+
+    packet = {
+        "car_no": car_no,
+        "stop_flag": int(status_array[0]),
+        "wheel_1st_rotation": int(status_array[16]),
+        "wheel_1st_position": int(status_array[17]),
+        "wheel_2nd_rotation": int(status_array[20]),
+        "wheel_2nd_position": int(status_array[21]),
+    }
+    return packet

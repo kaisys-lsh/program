@@ -1,10 +1,9 @@
-# utils/image_mode.py
+# mode/image_mode.py
 # --------------------------------------------------
-# 폴더 이미지 버전 루프
-# (처음에 리팩토링한 run_sender.py 로직 그대로)
+# 폴더 이미지 버전 루프 (3단계)
+# - digit_utils: build_code_if_exact_3() 기반
+# - car_event JSON 통일 (CarEventBus 사용)
 # --------------------------------------------------
-
-
 
 import time
 import cv2
@@ -14,18 +13,13 @@ from config import config
 from utils.image_utils import get_image_paths
 from utils.digit_utils import (
     filter_digit_region,
-    init_slots,
-    update_slots_with_instances,
-    build_final_code_from_slots,
-    decode_label_char,
+    build_code_if_exact_3,
 )
 
-# ★ 공유메모리 유틸 추가
-from utils.shared_mem_utils import get_shared_memory, write_car_number
+from utils.shared_mem_utils import write_car_number
 
 
-def run_image_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array, shm_ds_array):
-    # FPS 제어용
+def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array):
     if config.FPS > 0:
         frame_interval = 1.0 / config.FPS
     else:
@@ -33,9 +27,7 @@ def run_image_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array,
 
     use_cuda = torch.cuda.is_available()
 
-    # ★ 이미지 목록 읽기
     image_paths = get_image_paths(config.IMAGE_DIR)
-
     if len(image_paths) == 0:
         print("[ERROR] No images found in", config.IMAGE_DIR)
         return
@@ -45,35 +37,20 @@ def run_image_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array,
           ", FPS =", config.FPS,
           ", CUDA =", use_cuda)
 
-    # ★ WS / DS 공유메모리 두 개 모두 연다.
-    shm_ws = None
-    shm_ds = None
-    status_ws = None
-    status_ds = None
-    try:
-        shm_ws, status_ws = get_shared_memory("WS_POS")
-    except Exception as e:
-        print("[SHM] WS_POS 공유메모리 초기화 실패:", e)
-
-    try:
-        shm_ds, status_ds = get_shared_memory("DS_POS")
-    except Exception as e:
-        print("[SHM] DS_POS 공유메모리 초기화 실패:", e)
-
-    # 상태 변수들
     frame_idx = 0
     img_idx = 0
 
     mark_ready = False
     in_wagon = False
     no_digit_frames = 0
-    slots = init_slots()
+
+    # ✅ 이번 대차 구간에서 "확실한 3자리"가 나온 적 있으면 저장
+    best_final_code = "NONE"
 
     try:
         while True:
             t0 = time.time()
 
-            # 이미지 하나 선택 (순환)
             img_path = image_paths[img_idx]
             img_idx += 1
             if img_idx >= len(image_paths):
@@ -84,102 +61,84 @@ def run_image_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array,
                 print("[WARN] failed to read image:", img_path)
                 continue
 
-            # 원래 코드와 맞추기 위해 960x540 으로 리사이즈
             img = cv2.resize(img, (960, 540))
             img_h, img_w = img.shape[0], img.shape[1]
 
-            # 이 프레임에서 추론을 할지 여부
             run_detect = (frame_idx % config.DETECT_INTERVAL_FRAMES == 0)
 
-            send_code = ""
+            send_start = False
+            send_end_code = None
 
             if run_detect:
-                # 추론
                 with torch.inference_mode():
                     outputs = predictor(img)
 
                 instances = outputs["instances"].to("cpu")
 
-                # mark / 숫자 분리
                 mark_present = False
-                mark_instances = None
-
                 if len(instances) > 0:
                     if mark_class_idx is not None:
                         mask_mark = (instances.pred_classes == mark_class_idx)
-
                         if mask_mark.any():
                             mark_present = True
-                            mark_idxs = torch.nonzero(mask_mark).squeeze(1)
-                            mark_instances = instances[mark_idxs]
-
-                        mask_not_mark = ~mask_mark
-                        num_instances = instances[mask_not_mark]
+                        num_instances = instances[~mask_mark]
                     else:
                         num_instances = instances
                 else:
                     num_instances = instances
 
-                # 숫자 영역 필터링 (잡음 제거)
                 num_instances = filter_digit_region(num_instances, img_h, img_w)
 
                 # -------------------------------
                 # 상태 머신 (mark / START / END)
                 # -------------------------------
-
-                # 1) 아직 대차 구간이 아닐 때
                 if not in_wagon:
                     if (not mark_ready) and mark_present:
                         mark_ready = True
 
-                    # mark 를 본 뒤에 숫자가 나오면 START
                     if mark_ready and len(num_instances) > 0:
                         in_wagon = True
-                        slots = init_slots()
                         no_digit_frames = 0
-                        send_code = "START"
+                        best_final_code = "NONE"
+                        send_start = True
                         print("[WAGON] START")
 
-                # 2) 대차 번호 수집 중일 때
                 if in_wagon:
                     if len(num_instances) == 0:
                         no_digit_frames += 1
                     else:
                         no_digit_frames = 0
-                        update_slots_with_instances(slots, num_instances, metadata)
 
-                    # 연속으로 숫자가 안 보인 프레임 수가 기준 이상이면 END
+                        # ✅ 슬롯 대신: "확실한 3개면" 즉시 코드로 변환
+                        code = build_code_if_exact_3(num_instances, metadata)
+                        if code != "NONE":
+                            best_final_code = code
+
                     if no_digit_frames >= config.NO_DIGIT_END_FRAMES:
-                        final_code = build_final_code_from_slots(slots)
-                        send_code = final_code
-                        print("[WAGON] END →", final_code)
+                        send_end_code = best_final_code
+                        print("[WAGON] END →", send_end_code)
 
-                        # 공유메모리 기록
-                        if final_code != "NONE":
+                        # 공유메모리 기록 (성공일 때만)
+                        if send_end_code != "NONE":
                             if shm_ws_array is not None:
-                                write_car_number(shm_ws_array, final_code, block=False)
+                                write_car_number(shm_ws_array, send_end_code, block=False)
                             if shm_ds_array is not None:
-                                write_car_number(shm_ds_array, final_code, block=False)
+                                write_car_number(shm_ds_array, send_end_code, block=False)
 
-                        # 상태 초기화
                         in_wagon = False
                         mark_ready = False
-                        slots = init_slots()
                         no_digit_frames = 0
+                        best_final_code = "NONE"
 
-                # 메모리 정리
-                del outputs
-                del instances
-                del num_instances
-                del mark_instances
+                del outputs, instances, num_instances
 
-            # ✅ 번호만 ZMQ로 전송
-            # - 보통은 send_code 있을 때만 보내는게 깔끔함
-            if send_code:
-                sock.send_string(send_code)  # "START", "123", "NONE"
-                print(f"[SEND] code='{send_code}'")
+            # ✅ JSON 이벤트 전송
+            if send_start:
+                car_bus.send_start()
 
-            # FPS 맞추기
+            if send_end_code is not None:
+                car_bus.send_end(send_end_code)
+
             elapsed = time.time() - t0
             remain = frame_interval - elapsed
             if remain > 0:
@@ -189,17 +148,3 @@ def run_image_mode(predictor, metadata, mark_class_idx, ctx, sock, shm_ws_array,
 
     except KeyboardInterrupt:
         print("\n[IMAGE MODE] KeyboardInterrupt -> 종료")
-
-    finally:
-        # ★ 공유메모리는 close만 하고 unlink는 하지 않는다.
-        try:
-            if shm_ws is not None:
-                shm_ws.close()
-        except:
-            pass
-
-        try:
-            if shm_ds is not None:
-                shm_ds.close()
-        except:
-            pass
