@@ -1,4 +1,4 @@
-#threads_zmq_rtsp.py
+#workers/threads_zmq_rtsp.py
 import time
 import zmq
 import cv2

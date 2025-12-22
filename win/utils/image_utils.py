@@ -1,4 +1,4 @@
-#image_utils.py
+#utils/image_utils.py#
 import os
 from datetime import datetime
 

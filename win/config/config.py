@@ -1,4 +1,4 @@
-# config.py
+#config/config.py#
 import os
 import struct
 
