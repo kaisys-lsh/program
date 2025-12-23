@@ -6,14 +6,16 @@ IMAGE_DIR     = "/home/kaisys/Project/image"
 FPS           = 1
 JPEG_QUALITY  = 80
 
+TEST_IMAGE_MODE = True
+
 CFG_PATH      = "/home/kaisys/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
 WEIGHTS_PATH  = "/home/kaisys/Project/대차인식WS_V1.pth"
 
 PUSH_BIND     = "tcp://*:5577"
 EMPTY_CODE_OK = True
 
-DETECT_INTERVAL_FRAMES = 2
-NO_DIGIT_END_FRAMES    = 4
+DETECT_INTERVAL_FRAMES = 1
+NO_DIGIT_END_FRAMES    = 2
 ROI_Y_MIN_RATIO        = 0.40
 ROI_Y_MAX_RATIO        = 0.90
 
