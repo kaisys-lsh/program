@@ -1,4 +1,4 @@
-#workers/threads_zmq_rtsp.py
+# workers/threads_zmq_rtsp.py
 import time
 import zmq
 import cv2
@@ -20,6 +20,7 @@ class ZmqRecvThread(QThread):
         parent=None,
         rcv_timeout_ms: int = 1000,
         reconnect_delay: float = 1.0,
+        rcv_hwm: int = 100,   # ★ 1포트로 여러 이벤트가 오므로 HWM 여유 있게
     ):
         super().__init__(parent)
         self.pull_connect = pull_connect
@@ -29,6 +30,7 @@ class ZmqRecvThread(QThread):
 
         self.rcv_timeout_ms = rcv_timeout_ms
         self.reconnect_delay = reconnect_delay
+        self.rcv_hwm = int(rcv_hwm)
 
     def stop(self):
         self._running = False
@@ -44,8 +46,19 @@ class ZmqRecvThread(QThread):
             self.ctx = zmq.Context.instance()
 
         sock = self.ctx.socket(zmq.PULL)
-        sock.setsockopt(zmq.RCVHWM, 1)
+
+        # ★ 끊을 때 바로 종료되게
+        try:
+            sock.setsockopt(zmq.LINGER, 0)
+        except Exception:
+            pass
+
+        # ★ 수신 버퍼 여유
+        sock.setsockopt(zmq.RCVHWM, self.rcv_hwm)
+
+        # ★ recv timeout
         sock.setsockopt(zmq.RCVTIMEO, self.rcv_timeout_ms)
+
         sock.connect(self.pull_connect)
         self.sock = sock
 
@@ -54,23 +67,32 @@ class ZmqRecvThread(QThread):
 
         while self._running:
             try:
-                msg = self.sock.recv_string()
+                # bytes로 받고 직접 decode (인코딩 문제 방어)
+                msg_bytes = self.sock.recv()
             except zmq.error.Again:
                 continue
             except Exception as e:
                 print(f"[WARN] ZMQ recv error → reconnect: {e}")
                 try:
-                    self.sock.close(0)
+                    if self.sock is not None:
+                        self.sock.close(0)
                 except Exception:
                     pass
                 self.sock = None
                 time.sleep(self.reconnect_delay)
+                self._create_and_connect_socket()
                 continue
 
             if not self._running:
                 break
 
-            self.text_ready.emit(msg)
+            try:
+                msg = msg_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+
+            if msg:
+                self.text_ready.emit(msg)
 
         try:
             if self.sock is not None:

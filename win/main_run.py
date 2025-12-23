@@ -1,6 +1,7 @@
 # main_run.py
 import os
 import sys
+import json
 
 from PyQt5 import uic, QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QApplication
@@ -93,19 +94,11 @@ class MainWindow(QMainWindow):
         self.pushButton_2.clicked.connect(self._button_repaint)
 
         # ----------------------------
-        # ZMQ threads
+        # ZMQ thread (★ 1개 포트만 사용)
         # ----------------------------
         self.zmq_thread = ZmqRecvThread(PULL_CONNECT1, parent=self)
-        self.zmq_thread.text_ready.connect(self.wagon_ctrl.on_cam_message)
+        self.zmq_thread.text_ready.connect(self._on_zmq_text)
         self.zmq_thread.start()
-
-        self.zmq_thread2 = ZmqRecvThread(PULL_CONNECT2, parent=self)
-        self.zmq_thread2.text_ready.connect(lambda s: self._on_wheel_msg("WS", s))
-        self.zmq_thread2.start()
-
-        self.zmq_thread3 = ZmqRecvThread(PULL_CONNECT3, parent=self)
-        self.zmq_thread3.text_ready.connect(lambda s: self._on_wheel_msg("DS", s))
-        self.zmq_thread3.start()
 
         # ----------------------------
         # RTSP threads
@@ -180,6 +173,50 @@ class MainWindow(QMainWindow):
     # ---------------- UI helpers ----------------
     def _set_msg_1(self, text):
         self.msg_1.setText(str(text))
+
+    # ---------------- ZMQ router (★ JSON type 분기) ----------------
+    def _on_zmq_text(self, text):
+        if not isinstance(text, str):
+            return
+
+        s = text.strip()
+        if not s:
+            return
+
+        try:
+            data = json.loads(s)
+        except Exception:
+            return
+
+        msg_type = str(data.get("type", "")).strip()
+
+        # 1) 대차 이벤트
+        if msg_type == "car_event":
+            ev = str(data.get("event", "")).strip()
+
+            if ev == "START":
+                self.wagon_ctrl.on_cam_message("START")
+                return
+
+            if ev == "END":
+                car_no = str(data.get("car_no", "")).strip()
+
+                # 서버 미검출: "FFF" → 기존 wagon 로직 호환: "NONE"
+                if (not car_no) or (car_no == "FFF"):
+                    self.wagon_ctrl.on_cam_message("NONE")
+                else:
+                    self.wagon_ctrl.on_cam_message(car_no)
+
+                return
+
+            return
+
+        # 2) 휠 이벤트 / 누적 업데이트
+        if (msg_type == "wheel_event") or (msg_type == "car_update"):
+            pos = str(data.get("pos", "")).strip()
+            if pos == "WS" or pos == "DS":
+                self._on_wheel_msg(pos, s)
+            return
 
     # ---------------- frames ----------------
     def _on_cam1_frame(self, qimg, bgr):
@@ -314,7 +351,7 @@ class MainWindow(QMainWindow):
             self.db_writer.enqueue(rec)
 
         workers = [
-            self.zmq_thread, self.zmq_thread2, self.zmq_thread3,
+            self.zmq_thread,
             self.rtspA1, self.rtspB1, self.rtspA2, self.rtspB2,
             self.cry_ws1, self.cry_ds1, self.cry_ws2, self.cry_ds2,
             self.rtsp_wheel1, self.rtsp_wheel2, self.rtspCAM1
