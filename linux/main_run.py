@@ -1,4 +1,4 @@
-# run_sender.py
+# main_run.py
 import time
 import threading
 from collections import defaultdict, deque
@@ -100,12 +100,9 @@ class CarEventBus:
             print("[CAR-UPDATE]", update_evt)
 
 
+# run_sender.py 안에서 WheelFlagWatcher 교체(핵심 부분만)
+
 class WheelFlagWatcher(threading.Thread):
-    """
-    - 공유메모리 flag(10) 감시
-    - 읽으면 즉시 flag=0
-    - car_bus로 이벤트 전달
-    """
     def __init__(self, pos_name, status_array, car_bus, poll_interval=0.02):
         super().__init__(daemon=True)
         self.pos_name = pos_name
@@ -113,23 +110,69 @@ class WheelFlagWatcher(threading.Thread):
         self.car_bus = car_bus
         self.poll_interval = poll_interval
         self.running = True
+        self.pending = {}  # car_no -> {"stop":int, "ws1":(rot,pos), "ws2":(rot,pos)}
 
     def run(self):
         print(f"[WHEEL-WATCHER-{self.pos_name}] started")
         while self.running:
             try:
-                if self.status_array is not None and self.status_array[10] == 1:
-                    packet = read_wheel_status_packet(self.status_array)
-                    # 읽었으면 즉시 clear
-                    self.status_array[10] = 0
-                    self.car_bus.on_wheel_event(self.pos_name, packet)
+                arr = self.status_array
+                if arr is None:
+                    time.sleep(self.poll_interval)
+                    continue
+
+                # ---- 1st (flag 10) ----
+                if int(arr[10]) == 1:
+                    car_no = "".join(chr(int(arr[i])) for i in range(11, 14))
+                    stop = int(arr[0])
+                    r1 = int(arr[16])
+                    p1 = int(arr[17])
+                    arr[10] = 0  # 구조대로 Done
+
+                    d = self.pending.get(car_no, {})
+                    d["stop"] = stop
+                    d["ws1"] = (r1, p1)
+                    self.pending[car_no] = d
+
+                # ---- 2nd (flag 20) ----
+                if int(arr[20]) == 1:
+                    car_no = "".join(chr(int(arr[i])) for i in range(21, 24))
+                    stop = int(arr[0])
+                    r2 = int(arr[26])
+                    p2 = int(arr[27])
+                    arr[20] = 0  # 구조대로 Done
+
+                    d = self.pending.get(car_no, {})
+                    d["stop"] = stop
+                    d["ws2"] = (r2, p2)
+                    self.pending[car_no] = d
+
+                # ---- 둘 다 모이면 1회 전송 ----
+                for car_no in list(self.pending.keys()):
+                    d = self.pending[car_no]
+                    if ("ws1" in d) and ("ws2" in d):
+                        (r1, p1) = d["ws1"]
+                        (r2, p2) = d["ws2"]
+                        packet = {
+                            "car_no": car_no,
+                            "stop_flag": int(d.get("stop", 0)),
+                            "wheel_1st_rotation": r1,
+                            "wheel_1st_position": p1,
+                            "wheel_2nd_rotation": r2,
+                            "wheel_2nd_position": p2,
+                        }
+                        self.car_bus.on_wheel_event(self.pos_name, packet)
+                        del self.pending[car_no]
+
                 time.sleep(self.poll_interval)
+
             except Exception as e:
                 print(f"[WHEEL-WATCHER-{self.pos_name}] error:", e)
                 time.sleep(0.1)
 
     def stop(self):
         self.running = False
+
 
 
 def main():

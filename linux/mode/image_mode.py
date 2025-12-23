@@ -78,7 +78,13 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
                     no_digit_frames += 1
                 else:
                     no_digit_frames = 0
+
                     code = build_code_if_exact_3(num_instances, metadata)
+
+                    # 디버그: 왜 NONE만 나오는지 확인용
+                    # 필요없으면 주석처리해도 됨
+                    # print("[DBG] digits=", len(num_instances), "code=", code)
+
                     if code != "NONE":
                         best_final_code = code
 
@@ -99,10 +105,15 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
             # 3자리 아니면 FFF
             code = send_end_code if send_end_code != "NONE" else "FFF"
 
+            # ✅ 기존 block=False 때문에 flag(1)이 1이면 "조용히 스킵" 됐음
+            # ✅ 이제: 최대 1초 기다렸다가(상대가 0으로 내리면) 반드시 write 시도
             if shm_ws_array is not None:
-                write_car_number(shm_ws_array, code, block=False)
+                ok_ws = write_car_number(shm_ws_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
+                print("[SHM] WS write ok?", ok_ws, "code=", code)
+
             if shm_ds_array is not None:
-                write_car_number(shm_ds_array, code, block=False)
+                ok_ds = write_car_number(shm_ds_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
+                print("[SHM] DS write ok?", ok_ds, "code=", code)
 
             car_bus.send_end(code)
 

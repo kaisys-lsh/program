@@ -2,6 +2,7 @@
 # --------------------------------------------------
 # RTSP 기반 대차번호 인식
 # - 번호만 공유메모리에 전달
+# - 프로토콜 준수: flag(1)==0일 때만 쓰고, 아니면 잠깐 기다렸다가(최대 1초) 쓰기
 # --------------------------------------------------
 
 import time
@@ -41,6 +42,7 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
                 continue
 
         t0 = time.time()
+
         ret, img = cap.read()
         if not ret or img is None:
             cap.release()
@@ -82,6 +84,10 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
                 else:
                     no_digit_frames = 0
                     code = build_code_if_exact_3(num_instances, metadata)
+
+                    # 필요하면 디버그(왜 NONE만 나오는지 확인)
+                    # print("[DBG] digits=", len(num_instances), "code=", code)
+
                     if code != "NONE":
                         best_final_code = code
 
@@ -100,10 +106,15 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
         if send_end_code is not None:
             code = send_end_code if send_end_code != "NONE" else "FFF"
 
+            # ✅ 기존 block=False 때문에 flag(1)이 1이면 조용히 스킵될 수 있었음
+            # ✅ 이제: 최대 1초 기다렸다가 쓰기 시도(프로토콜 준수)
             if shm_ws_array is not None:
-                write_car_number(shm_ws_array, code, block=False)
+                ok_ws = write_car_number(shm_ws_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
+                print("[SHM] WS write ok?", ok_ws, "code=", code)
+
             if shm_ds_array is not None:
-                write_car_number(shm_ds_array, code, block=False)
+                ok_ds = write_car_number(shm_ds_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
+                print("[SHM] DS write ok?", ok_ds, "code=", code)
 
             car_bus.send_end(code)
 
