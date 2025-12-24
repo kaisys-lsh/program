@@ -12,9 +12,6 @@ os.chdir(BASE_DIR)
 # 리눅스PC 통신
 PULL_CONNECT1 = "tcp://192.168.0.103:5577"   # 송신 IP에 맞게
 #PULL_CONNECT = "tcp://172.30.1.56:5577"   # HOME PC 테스트용
-# ★ 추가: 5578, 5579 포트용 (필요하면 사용)
-PULL_CONNECT2 = "tcp://192.168.0.103:5578"
-PULL_CONNECT3 = "tcp://192.168.0.103:5579" 
 
 STRUCT_FORMAT = "<ifii"
 STRUCT_SIZE = struct.calcsize(STRUCT_FORMAT)

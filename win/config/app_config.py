@@ -13,3 +13,7 @@ DELAY_COUNT = 2
 
 # 테이블 최대 행
 MAX_TABLE_ROWS = 172
+
+SNAPSHOT_SEC = 1
+
+SHOW_LIVE_VIDEO = False
