@@ -54,12 +54,14 @@ WS_POS_2 = 47
 def open_or_create_shm(name, size):
     try:
         shm = shared_memory.SharedMemory(name=name, create=False)
-        print("[SHM] attach:", name)
+        real_size = shm.size  # ✅ 실제 크기 사용
+        print("[SHM] attach:", name, "size=", real_size)
     except FileNotFoundError:
         shm = shared_memory.SharedMemory(name=name, size=size, create=True)
-        print("[SHM] create:", name)
+        real_size = shm.size
+        print("[SHM] create:", name, "size=", real_size)
 
-    arr = np.ndarray((size,), dtype=np.uint8, buffer=shm.buf)
+    arr = np.ndarray((real_size,), dtype=np.uint8, buffer=shm.buf)
     return shm, arr
 
 

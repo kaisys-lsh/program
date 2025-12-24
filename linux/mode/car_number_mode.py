@@ -2,7 +2,8 @@
 # --------------------------------------------------
 # 대차번호 인식 (IMAGE / VIDEO 모드 통합)
 # - TEST_IMAGE_MODE(True/False)로 모드 선택
-# - 번호만 공유메모리에 전달 (flag(1) 프로토콜 준수)
+# - "번호"는 공유메모리에 기록하고, ZMQ로는 car_bus.send_car_no()로 보낸다.
+#   (event_id 매칭은 car_event_bus 가 담당)
 # --------------------------------------------------
 
 import time
@@ -26,28 +27,32 @@ def open_capture(url):
     return cap
 
 
-def _handle_end_code(car_bus, shm_ws_array, shm_ds_array, send_end_code):
-    # 3자리 아니면 FFF
-    code = send_end_code if send_end_code != "NONE" else "FFF"
+def _handle_final_code(car_bus, shm_array, final_code):
+    """
+    "대차가 끝났다"고 판단되는 순간에 호출.
+    - 공유메모리에 car_no 기록
+    - ZMQ로 car_no 이벤트 송신 (event_id 매칭은 bus가 수행)
+    """
+    code = final_code if final_code != "NONE" else "FFF"
 
-    # flag(1)==0일 때만 쓰고, 아니면 잠깐 기다렸다가(최대 1초) 쓰기
-    if shm_ws_array is not None:
-        ok_ws = write_car_number(shm_ws_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
-        print("[SHM] WS write ok?", ok_ws, "code=", code)
+    if shm_array is not None:
+        ok = write_car_number(
+            shm_array,
+            code,
+            block=True,
+            timeout_sec=1.0,
+            poll_interval=0.02
+        )
+        print("[SHM] write ok?", ok, "code=", code)
 
-    if shm_ds_array is not None:
-        ok_ds = write_car_number(shm_ds_array, code, block=True, timeout_sec=1.0, poll_interval=0.02)
-        print("[SHM] DS write ok?", ok_ds, "code=", code)
-
-    # ZMQ 이벤트는 "인식한 코드"를 그대로 END에 실어 보냄
-    # (공유메모리는 FFF로 fallback 되었을 수도 있으니, UI는 ZMQ를 보게 할 거면 이것도 동일하게 보내고 싶다면 여기서 code를 쓰면 됨)
-    car_bus.send_end(code)
+    # ★ 기존 send_end()가 아니라, car_no 확정 이벤트를 보냄
+    car_bus.send_car_no(code)
 
 
 # -----------------------------
 # IMAGE(JPG 폴더) 모드
 # -----------------------------
-def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array):
+def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_array):
     from utils.image_utils import get_image_paths
     from detectron2.utils.visualizer import Visualizer
 
@@ -85,7 +90,7 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
 
         run_detect = (frame_idx % config.DETECT_INTERVAL_FRAMES == 0)
         send_start = False
-        send_end_code = None
+        send_final_code = None
 
         if run_detect:
             with torch.inference_mode():
@@ -126,7 +131,7 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
                         best_final_code = code
 
                 if no_digit_frames >= config.NO_DIGIT_END_FRAMES:
-                    send_end_code = best_final_code
+                    send_final_code = best_final_code
                     in_wagon = False
                     mark_ready = False
                     no_digit_frames = 0
@@ -145,10 +150,11 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
 
         # ---- 이벤트 / 공유메모리 ----
         if send_start:
+            # ★ START 시점에 event_id 생성 (매칭은 bus가 관리)
             car_bus.send_start()
 
-        if send_end_code is not None:
-            _handle_end_code(car_bus, shm_ws_array, shm_ds_array, send_end_code)
+        if send_final_code is not None:
+            _handle_final_code(car_bus, shm_array, send_final_code)
 
         elapsed = time.time() - t0
         if frame_interval - elapsed > 0:
@@ -160,7 +166,7 @@ def run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
 # -----------------------------
 # VIDEO(RTSP) 모드
 # -----------------------------
-def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array):
+def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_array):
     frame_interval = 1.0 / config.FPS if config.FPS > 0 else 1.0
     cap = None
 
@@ -189,7 +195,7 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
         img_h, img_w = img.shape[:2]
 
         send_start = False
-        send_end_code = None
+        send_final_code = None
 
         with torch.inference_mode():
             outputs = predictor(img)
@@ -224,7 +230,7 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
                     best_final_code = code
 
             if no_digit_frames >= config.NO_DIGIT_END_FRAMES:
-                send_end_code = best_final_code
+                send_final_code = best_final_code
                 in_wagon = False
                 mark_ready = False
                 no_digit_frames = 0
@@ -233,10 +239,11 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
         del outputs, instances, num_instances
 
         if send_start:
+            # ★ START 시점에 event_id 생성
             car_bus.send_start()
 
-        if send_end_code is not None:
-            _handle_end_code(car_bus, shm_ws_array, shm_ds_array, send_end_code)
+        if send_final_code is not None:
+            _handle_final_code(car_bus, shm_array, send_final_code)
 
         elapsed = time.time() - t0
         if frame_interval - elapsed > 0:
@@ -246,8 +253,8 @@ def run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, s
 # -----------------------------
 # Wrapper: TEST_IMAGE_MODE로 선택
 # -----------------------------
-def run_car_number_mode(use_image_mode, predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array):
+def run_car_number_mode(use_image_mode, predictor, metadata, mark_class_idx, car_bus, shm_array):
     if use_image_mode:
-        run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array)
+        run_image_mode(predictor, metadata, mark_class_idx, car_bus, shm_array)
     else:
-        run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_ws_array, shm_ds_array)
+        run_video_mode(predictor, metadata, mark_class_idx, car_bus, shm_array)

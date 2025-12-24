@@ -6,11 +6,14 @@
 # - SharedMemory open
 # - Wheel watchers start (WS/DS)
 # - Car number mode 실행 (IMAGE/VIDEO 선택)
+#
+# 이번 수정 반영
+# - CarEventBus: START에서 event_id 생성, car_no 확정/휠상태 매칭은 bus가 담당
+# - number_mode: car_bus.send_start(), car_bus.send_car_no() 사용
+# - watcher: car_bus.on_wheel_status(payload) 로 보고
 # --------------------------------------------------
 
-from config import config
-from config.config import TEST_IMAGE_MODE
-
+from config.config import TEST_IMAGE_MODE, PUSH_BIND
 from setup.detectron_setup import setup_detectron
 from utils.zmq_utils import ZmqSendWorker
 from utils.shared_mem_utils import open_or_create_shm
@@ -18,70 +21,94 @@ from utils.shared_mem_utils import open_or_create_shm
 from core.car_event_bus import CarEventBus
 from core.wheel_flag_watcher import WheelFlagWatcher
 
-# 너가 만든 통합 모드 래퍼
-# (파일명이 mode/car_number_mode.py 라면 아래처럼)
-from mode.number_mode import run_car_number_mode
+from mode.car_number_mode import run_car_number_mode
+
+# (선택) SHM 구조 모니터링이 필요하면 주석 해제
+# from utils.shm_debug import ShmMonitorThread
 
 
 def main():
+    # -----------------------------
+    # 1) Detectron2 Predictor 준비
+    # -----------------------------
     predictor, metadata, mark_class_idx = setup_detectron()
 
-    # ZMQ 송신 워커
-    sender = ZmqSendWorker()
-    sender.start()
+    # -----------------------------
+    # 2) ZMQ Sender 시작
+    # -----------------------------
+    zmq_sender = ZmqSendWorker(bind_addr=PUSH_BIND)
+    zmq_sender.start()
 
-    # 이벤트 버스 (WS/DS 둘 다 같은 event_id 매칭)
-    car_bus = CarEventBus(sender, pending_expire_sec=30.0)
+    # -----------------------------
+    # 3) SharedMemory attach/create
+    # -----------------------------
+    shm, shm_array = open_or_create_shm()
 
-    # 공유메모리 (WS / DS)
-    shm_ws, shm_ws_buf = open_or_create_shm(config.SHM_WS_NAME, config.SHM_SIZE)
-    print("[SHM] WS opened:", config.SHM_WS_NAME)
+    # (선택) SHM 구조 자체를 주기적으로 보고 싶으면 켜기
+    # mon = ShmMonitorThread(shm_array, interval_sec=0.5)
+    # mon.start()
 
-    shm_ds, shm_ds_buf = open_or_create_shm(config.SHM_DS_NAME, config.SHM_SIZE)
-    print("[SHM] DS opened:", config.SHM_DS_NAME)
+    # -----------------------------
+    # 4) Event Bus
+    # -----------------------------
+    car_bus = CarEventBus(zmq_sender)
 
-    # 휠 상태 watcher (기본: 1st/2nd 둘 다 모이면 1회 전송)
-    ws_watcher = WheelFlagWatcher("WS", shm_ws_buf, car_bus, poll_interval=0.02, send_when_both=True)
-    ds_watcher = WheelFlagWatcher("DS", shm_ds_buf, car_bus, poll_interval=0.02, send_when_both=True)
+    # -----------------------------
+    # 5) Wheel Watchers (WS/DS)
+    #    - 같은 shm_array를 공유
+    # -----------------------------
+    ws_watcher = WheelFlagWatcher(
+        "WS",
+        shm_array,
+        car_bus,
+        poll_interval=0.02,
+        send_when_both=True,
+    )
+    ds_watcher = WheelFlagWatcher(
+        "DS",
+        shm_array,
+        car_bus,
+        poll_interval=0.02,
+        send_when_both=True,
+    )
+
     ws_watcher.start()
     ds_watcher.start()
 
+    # -----------------------------
+    # 6) Car number mode 실행
+    # -----------------------------
     try:
-        print("[MAIN] IMAGE MODE" if TEST_IMAGE_MODE else "[MAIN] VIDEO MODE")
-
         run_car_number_mode(
-            TEST_IMAGE_MODE,
-            predictor,
-            metadata,
-            mark_class_idx,
-            car_bus,
-            shm_ws_buf,
-            shm_ds_buf,
+            use_image_mode=TEST_IMAGE_MODE,
+            predictor=predictor,
+            metadata=metadata,
+            mark_class_idx=mark_class_idx,
+            car_bus=car_bus,
+            shm_array=shm_array,
         )
-
+    except KeyboardInterrupt:
+        print("[MAIN] KeyboardInterrupt")
     finally:
-        print("[MAIN] shutdown")
-
+        # -----------------------------
+        # 종료 처리
+        # -----------------------------
         try:
             ws_watcher.stop()
+        except Exception:
+            pass
+        try:
             ds_watcher.stop()
         except Exception:
             pass
 
         try:
-            sender.close()
+            zmq_sender.stop()
         except Exception:
             pass
 
         try:
-            if shm_ws is not None:
-                shm_ws.close()
-        except Exception:
-            pass
-
-        try:
-            if shm_ds is not None:
-                shm_ds.close()
+            shm.close()
         except Exception:
             pass
 

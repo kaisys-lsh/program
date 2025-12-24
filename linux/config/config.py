@@ -3,7 +3,7 @@
 import torch
 
 IMAGE_DIR     = "/home/kaisys/Project/image"
-FPS           = 1
+FPS           = 0.8
 JPEG_QUALITY  = 80
 
 TEST_IMAGE_MODE = True
@@ -37,6 +37,5 @@ def get_device():
 # 🔹 대차번호를 쓰기 위한 공유메모리 설정 (WS / DS 공용)
 #   → Wheel 상태 코드(Config.ini)랑 이름/크기 맞춰야 함
 # ─────────────────────────────────────────
-SHM_WS_NAME = "WS_wheel_status_mem"   # [WS_POS] SM_Name
-SHM_DS_NAME = "DS_wheel_status_mem"   # [DS_POS] SM_Name
-SHM_SIZE    = 100                     # [WS_POS]/[DS_POS] SM_Size
+SHM_NAME = "wheel_status_mem"   
+SHM_SIZE    = 100                 

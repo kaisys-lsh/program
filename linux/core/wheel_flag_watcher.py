@@ -5,8 +5,12 @@
 #   DS: flag 10(1st), 20(2nd)
 #   WS: flag 30(1st), 40(2nd)
 # - flag==1 이면 읽고 flag=0으로 내림(Done)
-# - 기본 동작: 1st/2nd 둘 다 모이면 "1회" car_bus.on_wheel_event() 호출
-#   (필요하면 send_when_both=False 로 1st/2nd 각각 전송도 가능)
+# - 기본 동작: 1st/2nd 둘 다 모이면 "1회" car_bus.on_wheel_status() 호출
+#   (send_when_both=False 로 1st/2nd 각각 전송도 가능)
+#
+# 변경점(이번 수정):
+# - 기존 car_bus.on_wheel_event(pos, packet) 호출 → car_bus.on_wheel_status(payload) 호출
+# - event_id 매칭/송신 여부는 CarEventBus가 담당 (여긴 "읽어서 보고" 역할)
 # --------------------------------------------------
 
 import time
@@ -46,7 +50,6 @@ class WheelFlagWatcher(threading.Thread):
             self.car2 = (21, 22, 23)
             self.rot2 = 26
             self.pos2 = 27
-
         else:  # "WS"
             self.flag1 = 30
             self.car1 = (31, 32, 33)
@@ -62,8 +65,10 @@ class WheelFlagWatcher(threading.Thread):
     # 내부 유틸
     # -----------------------------
     def _read_ascii3(self, arr, idxs):
-        # 3바이트를 ASCII로 읽어 문자열로 반환
-        # (0값 등 이상치가 있으면 'F'로 치환해서 3자리 유지)
+        """
+        3바이트를 ASCII로 읽어 3자리 문자열 반환.
+        (0값/이상치가 있으면 'F'로 치환해서 3자리 유지)
+        """
         out = []
         k = 0
         while k < 3:
@@ -77,7 +82,13 @@ class WheelFlagWatcher(threading.Thread):
         return "".join(out)
 
     def _send_packet(self, car_no, stop, r1, p1, r2, p2):
-        packet = {
+        """
+        bus로 '휠상태 payload' 전달.
+        - event_id 매칭/송신은 bus가 담당
+        """
+        payload = {
+            "type": "wheel_status",
+            "pos": self.pos_name,  # "WS" or "DS"
             "car_no": car_no,
             "stop_flag": int(stop),
             "wheel_1st_rotation": int(r1),
@@ -85,7 +96,7 @@ class WheelFlagWatcher(threading.Thread):
             "wheel_2nd_rotation": int(r2),
             "wheel_2nd_position": int(p2),
         }
-        self.car_bus.on_wheel_event(self.pos_name, packet)
+        self.car_bus.on_wheel_status(payload)
 
     # -----------------------------
     # Thread main
@@ -100,7 +111,7 @@ class WheelFlagWatcher(threading.Thread):
                     time.sleep(self.poll_interval)
                     continue
 
-                stop = int(arr[0])  # 0: 이동 / 1: 정지
+                stop = int(arr[0])  # 0: 이동 / 1: 정지 (문서/기존 구현 유지)
 
                 # ---- 1st ----
                 if int(arr[self.flag1]) == 1:
@@ -117,7 +128,7 @@ class WheelFlagWatcher(threading.Thread):
                         d["w1"] = (r1, p1)
                         self.pending[car_no] = d
                     else:
-                        # 1st만 들어온 경우라도 즉시 전송
+                        # 1st만 들어온 경우라도 즉시 전달
                         self._send_packet(car_no, stop, r1, p1, 0, 0)
 
                 # ---- 2nd ----
@@ -135,10 +146,10 @@ class WheelFlagWatcher(threading.Thread):
                         d["w2"] = (r2, p2)
                         self.pending[car_no] = d
                     else:
-                        # 2nd만 들어온 경우라도 즉시 전송
+                        # 2nd만 들어온 경우라도 즉시 전달
                         self._send_packet(car_no, stop, 0, 0, r2, p2)
 
-                # ---- (기본) 둘 다 모이면 1회 전송 ----
+                # ---- (기본) 둘 다 모이면 1회 전달 ----
                 if self.send_when_both:
                     for car_no in list(self.pending.keys()):
                         d = self.pending.get(car_no)
