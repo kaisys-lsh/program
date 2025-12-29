@@ -5,12 +5,14 @@ import cv2
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from utils.image_utils import decode_jpeg_to_bgr, qimage_from_bgr, cvimg_to_qimage
+from utils.image_utils import cvimg_to_qimage
 
 
 class ZmqRecvThread(QThread):
     """
     ZeroMQ PULL 소켓으로 문자열(JSON 포함)만 수신하는 스레드
+    - 서버에서 여러 JSON이 '\n'으로 붙어서 올 수 있으니
+      여기서 라인 단위로 쪼개 emit 한다.
     """
     text_ready = pyqtSignal(str)
 
@@ -20,7 +22,7 @@ class ZmqRecvThread(QThread):
         parent=None,
         rcv_timeout_ms: int = 1000,
         reconnect_delay: float = 1.0,
-        rcv_hwm: int = 100,   # ★ 1포트로 여러 이벤트가 오므로 HWM 여유 있게
+        rcv_hwm: int = 100,   # 1포트로 여러 이벤트가 오므로 HWM 여유 있게
     ):
         super().__init__(parent)
         self.pull_connect = pull_connect
@@ -28,8 +30,8 @@ class ZmqRecvThread(QThread):
         self.ctx = None
         self.sock = None
 
-        self.rcv_timeout_ms = rcv_timeout_ms
-        self.reconnect_delay = reconnect_delay
+        self.rcv_timeout_ms = int(rcv_timeout_ms)
+        self.reconnect_delay = float(reconnect_delay)
         self.rcv_hwm = int(rcv_hwm)
 
     def stop(self):
@@ -41,23 +43,30 @@ class ZmqRecvThread(QThread):
                 self.sock.close(0)
             except Exception:
                 pass
+            self.sock = None
 
         if self.ctx is None:
             self.ctx = zmq.Context.instance()
 
         sock = self.ctx.socket(zmq.PULL)
 
-        # ★ 끊을 때 바로 종료되게
+        # 끊을 때 바로 종료되게
         try:
             sock.setsockopt(zmq.LINGER, 0)
         except Exception:
             pass
 
-        # ★ 수신 버퍼 여유
-        sock.setsockopt(zmq.RCVHWM, self.rcv_hwm)
+        # 수신 버퍼 여유
+        try:
+            sock.setsockopt(zmq.RCVHWM, self.rcv_hwm)
+        except Exception:
+            pass
 
-        # ★ recv timeout
-        sock.setsockopt(zmq.RCVTIMEO, self.rcv_timeout_ms)
+        # recv timeout
+        try:
+            sock.setsockopt(zmq.RCVTIMEO, self.rcv_timeout_ms)
+        except Exception:
+            pass
 
         sock.connect(self.pull_connect)
         self.sock = sock
@@ -67,7 +76,6 @@ class ZmqRecvThread(QThread):
 
         while self._running:
             try:
-                # bytes로 받고 직접 decode (인코딩 문제 방어)
                 msg_bytes = self.sock.recv()
             except zmq.error.Again:
                 continue
@@ -91,7 +99,21 @@ class ZmqRecvThread(QThread):
             except Exception:
                 continue
 
-            if msg:
+            if not msg:
+                continue
+
+            # \x00 같은 찌꺼기 제거 + 공백 정리
+            msg = msg.replace("\x00", "").strip()
+            if not msg:
+                continue
+
+            # 여러 줄로 붙어올 수 있으니 여기서 분리해서 emit
+            if "\n" in msg:
+                for ln in msg.splitlines():
+                    ln = ln.strip()
+                    if ln:
+                        self.text_ready.emit(ln)
+            else:
                 self.text_ready.emit(msg)
 
         try:
@@ -106,8 +128,7 @@ class ZmqRecvThread(QThread):
 class RtspThread(QThread):
     """
     RTSP 스트림을 읽어 QImage/BGR 프레임을 시그널로 내보내는 스레드.
-    연결 실패 또는 프레임 읽기 실패가 일정 횟수 이상 발생하면
-    RTSP에 재연결을 시도한다.
+    연결 실패 또는 프레임 읽기 실패가 일정 횟수 이상 발생하면 재연결 시도.
     """
     frame_ready = pyqtSignal(object, object)  # QImage, BGR
 
@@ -125,18 +146,20 @@ class RtspThread(QThread):
         self.name = name
         self._running = True
 
-        self.reconnect_delay = reconnect_delay
-        self.max_read_fail = max_read_fail
-        self.frame_interval = frame_interval
+        self.reconnect_delay = float(reconnect_delay)
+        self.max_read_fail = int(max_read_fail)
+        self.frame_interval = float(frame_interval)
 
     def stop(self):
         self._running = False
 
     def _open_capture(self):
-        """RTSP 캡처를 연다."""
         cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            cap.release()
+            try:
+                cap.release()
+            except Exception:
+                pass
             return None
         return cap
 
@@ -145,7 +168,6 @@ class RtspThread(QThread):
         read_fail_count = 0
 
         while self._running:
-            # 캡처 객체가 없거나 닫혀 있으면 재연결 시도
             if cap is None or not cap.isOpened():
                 print(f"[INFO] {self.name} RTSP 연결 시도: {self.rtsp_url}")
                 cap = self._open_capture()
@@ -159,7 +181,6 @@ class RtspThread(QThread):
 
             if not ok or frame is None:
                 read_fail_count += 1
-                # 잠시 대기 후 다시 시도
                 time.sleep(self.frame_interval)
 
                 if read_fail_count >= self.max_read_fail:
@@ -173,19 +194,17 @@ class RtspThread(QThread):
                     time.sleep(self.reconnect_delay)
                 continue
 
-            # 프레임 정상 읽힘
             read_fail_count = 0
+
             qimg = cvimg_to_qimage(frame)
             if qimg is None:
                 continue
 
             self.frame_ready.emit(qimg, frame)
 
-            # FPS 너무 높지 않게 약간의 sleep (필요시 조절)
             if self.frame_interval > 0:
                 time.sleep(self.frame_interval)
 
-        # 루프 종료 시 자원 정리
         if cap is not None:
             try:
                 cap.release()

@@ -26,13 +26,29 @@ class ButtonManager:
             self.paint_buttons.append(btn)
             i += 1
 
+        # ✅ 클릭 시 버튼 텍스트에서 "첫 줄"만 따서 넘김
         for btn in self.paint_buttons:
-            btn.clicked.connect(lambda _, b=btn: self.viewer_launcher.open_for_button(self.window, b.text()))
+            btn.clicked.connect(lambda _, b=btn: self._open_by_button_text(b))
 
         n = len(self.paint_buttons)
         self.button_labels = [""] * n
         self.button_db_values = [None] * n
         self.button_wheel_status = [""] * n
+
+    def _open_by_button_text(self, btn):
+        try:
+            txt = btn.text()
+        except Exception:
+            txt = ""
+
+        # ✅ "090\n정상" -> "090" (첫 줄만)
+        if txt is None:
+            txt = ""
+        txt = str(txt).strip()
+        if "\n" in txt:
+            txt = txt.splitlines()[0].strip()
+
+        self.viewer_launcher.open_for_button(self.window, txt)
 
     def set_thresholds(self, thresholds):
         self.thresholds = thresholds

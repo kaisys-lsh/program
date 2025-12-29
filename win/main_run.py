@@ -1,4 +1,5 @@
 # main_run.py
+# -*- coding: utf-8 -*-
 import os
 import sys
 import json
@@ -29,17 +30,16 @@ from config.app_config import (
 
 from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
 from utils.image_utils import set_label_pixmap_fill
-from utils.wheel_status_utils import judge_one_wheel
+from utils.wheel_status_utils import judge_one_wheel, combine_overall_wheel_status
 
 from workers.db_writer import DbWriterThread
+from workers.db_poller import DbPollerThread
+
 from ui.viewer_launcher import ViewerLauncher
 from ui.button_manager import ButtonManager
 from ui.table_manager import TableManager
-
 from controllers.wagon_controller import WagonController
-
 from utils.zmq_debug_printer import print_zmq_debug
-
 
 # 카메라/ZMQ 스레드 선택
 if USE_DUMMY_CAMERA:
@@ -61,144 +61,146 @@ class MainWindow(QMainWindow):
 
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # ----------------------------
-        # thresholds
-        # ----------------------------
+        # ---------------- thresholds ----------------
         self.thresholds = load_thresholds_from_json()
         self.lineEdit_2.setText(str(self.thresholds["strong"]))
         self.lineEdit_3.setText(str(self.thresholds["mid"]))
         self.lineEdit_4.setText(str(self.thresholds["weak"]))
 
-        # ----------------------------
-        # DB writer
-        # ----------------------------
+        # ---------------- DB writer ----------------
         self.db_writer = DbWriterThread(DB_HOST, DB_PORT, DB_USER, DB_PW, parent=self)
         self.db_writer.start()
 
-        # ----------------------------
-        # UI managers
-        # ----------------------------
+        # ---------------- DB poller (표시 담당) ----------------
+        # ✅ "DB가 큐 역할" + "완성 row만 HMI 표시"
+        # ✅ 미완성 영원 방지: car_no / wheel / zone1 타임아웃 강제완료 포함
+        self.db_poller = DbPollerThread(
+            DB_HOST, DB_PORT, DB_USER, DB_PW,
+            poll_interval_sec=0.2,
+            skip_existing_completed=True,
+
+            enable_force_finalize=True,
+            force_car_no_sec=5.0,
+            force_wheel_sec=5.0,
+            force_zone1_sec=5.0,
+            force_zone2_sec=None,   # zone2는 기본 강제완료 안함(7대 지연이 정상이라서)
+
+            parent=self
+        )
+        self.db_poller.record_ready.connect(self._on_db_record_ready)
+        self.db_poller.start()
+
+        # ---------------- UI managers ----------------
         self.viewer_launcher = ViewerLauncher(self.base_dir)
         self.button_manager = ButtonManager(self, self.viewer_launcher, self.thresholds)
         self.table_manager = TableManager(self.tableWidget, self.thresholds, MAX_TABLE_ROWS)
 
-        # ----------------------------
-        # Wagon controller (핵심)
-        # ----------------------------
+        # ✅ 현재 진행 중 대차 event_id (라벨 보호용)
+        self.current_event_id = ""
+
+        # ---------------- Wagon controller (저장 patch 생성 담당) ----------------
+        # ✅ 핵심 변경:
+        # - _db_cache 제거
+        # - wagon_controller가 만든 patch(dict)를 그대로 db_writer.enqueue로 보냄
         self.wagon_ctrl = WagonController(
             delay_count=DELAY_COUNT,
             snapshot_sec=SNAPSHOT_SEC,
             on_set_car_label=self._set_msg_1,
-            on_stage1_ready=self._on_stage1_ready,
-            on_final_ready=self._on_final_ready
+            on_stage1_ready=self._enqueue_db_patch,   # ✅ 바로 DB patch 저장
+            db_host=DB_HOST,
+            db_port=DB_PORT,
+            db_user=DB_USER,
+            db_pw=DB_PW,
+            db_name="posco",
+            table_name="data",
         )
 
-        # ----------------------------
-        # repaint 버튼
-        # ----------------------------
+        # ---------------- repaint 버튼 ----------------
         self.pushButton_2.clicked.connect(self._button_repaint)
 
-        # ----------------------------
-        # ZMQ (1포트, JSON only)
-        # ----------------------------
+        # ---------------- ZMQ ----------------
         self.zmq_thread = ZmqRecvThread(PULL_CONNECT1, parent=self)
         self.zmq_thread.text_ready.connect(self._on_zmq_text)
         self.zmq_thread.start()
 
-        # ----------------------------
-        # RTSP threads (실시간 표시 X, 프레임만 업데이트)
-        # ----------------------------
-        self.rtspCAM1 = RtspThread(RTSP_CAM_IP, name="CAM1", parent=self)
-        self.rtspCAM1.frame_ready.connect(lambda q, b: self._on_frame("cam1", self.image_1, q, b))
-        self.rtspCAM1.start()
+        # ---------------- RTSP ----------------
+        def start_rtsp_thread(ip, name, label, cam_id):
+            t = RtspThread(ip, name=name, parent=self)
+            t.frame_ready.connect(lambda q, b: self._on_frame(cam_id, label, q, b))
+            t.start()
+            return t
 
-        self.rtspWS1 = RtspThread(RTSP_A1_IP, name="WS1", parent=self)
-        self.rtspWS1.frame_ready.connect(lambda q, b: self._on_frame("ws1", self.image_2, q, b))
-        self.rtspWS1.start()
+        self.rtspCAM1 = start_rtsp_thread(RTSP_CAM_IP, "CAM1", self.image_1, "cam1")
+        self.rtspWS1 = start_rtsp_thread(RTSP_A1_IP, "WS1", self.image_2, "ws1")
+        self.rtspDS1 = start_rtsp_thread(RTSP_B1_IP, "DS1", self.image_3, "ds1")
+        self.rtspWS2 = start_rtsp_thread(RTSP_A2_IP, "WS2", self.image_4, "ws2")
+        self.rtspDS2 = start_rtsp_thread(RTSP_B2_IP, "DS2", self.image_5, "ds2")
+        self.rtspWheelWS = start_rtsp_thread(RTSP_C1_IP, "Wheel_WS", self.image_6, "wheel_ws")
+        self.rtspWheelDS = start_rtsp_thread(RTSP_C2_IP, "Wheel_DS", self.image_7, "wheel_ds")
 
-        self.rtspDS1 = RtspThread(RTSP_B1_IP, name="DS1", parent=self)
-        self.rtspDS1.frame_ready.connect(lambda q, b: self._on_frame("ds1", self.image_3, q, b))
-        self.rtspDS1.start()
+        # ---------------- CRY threads (dB) ----------------
+        def start_cry_thread(ip, port, user, pw, use_https, cam_id, label):
+            t = CryApiThread(
+                ip=ip, port=port, user=user, pw=pw,
+                use_https=use_https,
+                interval_sec=CRY_INTERVAL_SEC, timeout_sec=CRY_TIMEOUT_SEC,
+                parent=self
+            )
+            t.db_ready.connect(lambda v: self._on_db(cam_id, v, label))
+            t.start()
+            return t
 
-        self.rtspWS2 = RtspThread(RTSP_A2_IP, name="WS2", parent=self)
-        self.rtspWS2.frame_ready.connect(lambda q, b: self._on_frame("ws2", self.image_4, q, b))
-        self.rtspWS2.start()
-
-        self.rtspDS2 = RtspThread(RTSP_B2_IP, name="DS2", parent=self)
-        self.rtspDS2.frame_ready.connect(lambda q, b: self._on_frame("ds2", self.image_5, q, b))
-        self.rtspDS2.start()
-
-        self.rtspWheelWS = RtspThread(RTSP_C1_IP, name="Wheel_WS", parent=self)
-        self.rtspWheelWS.frame_ready.connect(lambda q, b: self._on_frame("wheel_ws", self.image_6, q, b))
-        self.rtspWheelWS.start()
-
-        self.rtspWheelDS = RtspThread(RTSP_C2_IP, name="Wheel_DS", parent=self)
-        self.rtspWheelDS.frame_ready.connect(lambda q, b: self._on_frame("wheel_ds", self.image_7, q, b))
-        self.rtspWheelDS.start()
-
-        # ----------------------------
-        # CRY threads (dB)
-        # ----------------------------
-        self.cry_ws1 = CryApiThread(
-            ip=CRY_A1_IP, port=CRY_A1_PORT, user=CRY_USER, pw=CRY_PW,
-            use_https=CRY_A1_USE_HTTPS,
-            interval_sec=CRY_INTERVAL_SEC, timeout_sec=CRY_TIMEOUT_SEC,
-            parent=self
-        )
-        self.cry_ws1.db_ready.connect(lambda v: self._on_db("ws1", v, self.msg_2))
-        self.cry_ws1.start()
-
-        self.cry_ds1 = CryApiThread(
-            ip=CRY_B1_IP, port=CRY_B1_PORT, user=CRY_USER, pw=CRY_PW,
-            use_https=CRY_B1_USE_HTTPS,
-            interval_sec=CRY_INTERVAL_SEC, timeout_sec=CRY_TIMEOUT_SEC,
-            parent=self
-        )
-        self.cry_ds1.db_ready.connect(lambda v: self._on_db("ds1", v, self.msg_3))
-        self.cry_ds1.start()
-
-        self.cry_ws2 = CryApiThread(
-            ip=CRY_A2_IP, port=CRY_A2_PORT, user=CRY_USER, pw=CRY_PW,
-            use_https=CRY_A2_USE_HTTPS,
-            interval_sec=CRY_INTERVAL_SEC, timeout_sec=CRY_TIMEOUT_SEC,
-            parent=self
-        )
-        self.cry_ws2.db_ready.connect(lambda v: self._on_db("ws2", v, self.msg_6))
-        self.cry_ws2.start()
-
-        self.cry_ds2 = CryApiThread(
-            ip=CRY_B2_IP, port=CRY_B2_PORT, user=CRY_USER, pw=CRY_PW,
-            use_https=CRY_B2_USE_HTTPS,
-            interval_sec=CRY_INTERVAL_SEC, timeout_sec=CRY_TIMEOUT_SEC,
-            parent=self
-        )
-        self.cry_ds2.db_ready.connect(lambda v: self._on_db("ds2", v, self.msg_5))
-        self.cry_ds2.start()
+        self.cry_ws1 = start_cry_thread(CRY_A1_IP, CRY_A1_PORT, CRY_USER, CRY_PW, CRY_A1_USE_HTTPS, "ws1", self.msg_2)
+        self.cry_ds1 = start_cry_thread(CRY_B1_IP, CRY_B1_PORT, CRY_USER, CRY_PW, CRY_B1_USE_HTTPS, "ds1", self.msg_3)
+        self.cry_ws2 = start_cry_thread(CRY_A2_IP, CRY_A2_PORT, CRY_USER, CRY_PW, CRY_A2_USE_HTTPS, "ws2", self.msg_6)
+        self.cry_ds2 = start_cry_thread(CRY_B2_IP, CRY_B2_PORT, CRY_USER, CRY_PW, CRY_B2_USE_HTTPS, "ds2", self.msg_5)
 
     # ---------------- UI helpers ----------------
     def _set_msg_1(self, text):
-        self.msg_1.setText(str(text))
+        try:
+            self.msg_1.setText(str(text))
+        except Exception:
+            pass
 
     def _safe_set_label_path(self, label, path):
         if not path:
             return
         try:
             pm = QPixmap(path)
-            if pm.isNull():
-                return
-            set_label_pixmap_fill(label, pm)
+            if not pm.isNull():
+                set_label_pixmap_fill(label, pm)
+        except Exception:
+            pass
+
+    def _clear_wheel_labels(self):
+        try:
+            self.msg_4.setText("")
+            self.msg_8.setText("")
+            self.msg_7.setText("")
+            self.msg_9.setText("")
+        except Exception:
+            pass
+
+    # ---------------- DB patch enqueue ----------------
+    def _enqueue_db_patch(self, patch):
+        """
+        ✅ wagon_controller가 만든 patch(dict)를 그대로 DB에 저장
+        - db_writer가 "부분 patch" 업데이트를 지원하므로 _db_cache가 필요 없음
+        """
+        if not isinstance(patch, dict):
+            return
+        try:
+            self.db_writer.enqueue(patch)
         except Exception:
             pass
 
     # ---------------- frames ----------------
     def _on_frame(self, cam_id, label, qimg, bgr):
-        # 실시간 표시를 끔(썸네일은 final 시점에만 표시)
         if SHOW_LIVE_VIDEO:
             try:
                 set_label_pixmap_fill(label, QPixmap.fromImage(qimg))
             except Exception:
                 pass
-
         self.wagon_ctrl.update_latest_frame(cam_id, bgr)
 
     # ---------------- dB ----------------
@@ -211,7 +213,6 @@ class MainWindow(QMainWindow):
             label_widget.setText(str(round(fv, 2)))
         except Exception:
             pass
-
         self.wagon_ctrl.on_db(cam_id, fv)
 
     # ---------------- ZMQ ----------------
@@ -219,17 +220,14 @@ class MainWindow(QMainWindow):
         print_zmq_debug(text)
         if not isinstance(text, str):
             return
+
         s = text.strip()
         if not s:
             return
 
-        # 여러 줄로 붙어 올 가능성 방어
-        lines = []
+        # 여러 줄 JSON도 처리
         if "\n" in s:
-            for ln in s.splitlines():
-                ln = ln.strip()
-                if ln:
-                    lines.append(ln)
+            lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
         else:
             lines = [s]
 
@@ -239,118 +237,109 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
 
-            mtype = str(data.get("type", "")).strip()
+            mtype = str(data.get("type", "")).strip().lower()
+            eid = str(data.get("event_id", "") or "").strip()
 
-            # 1) car_event
             if mtype == "car_event":
+                ev = str(data.get("event", "")).strip().upper()
+
+                # 현재 대차 event_id 추적 + 라벨 초기화
+                if ev == "START" and eid:
+                    self.current_event_id = eid
+                    self._clear_wheel_labels()
+
+                # END가 오면 현재 대차를 비움(원하면 유지해도 됨)
+                if ev == "END" and eid and self.current_event_id == eid:
+                    self.current_event_id = ""
+
                 self.wagon_ctrl.on_car_event(data)
                 continue
 
-            # 2) wheel_event / car_update
-            if mtype in ("wheel_event", "car_update"):
+            if mtype == "car_no":
+                self.wagon_ctrl.on_car_no(data)
+                continue
+
+            if mtype in ("wheel_status", "wheel_event", "car_update"):
                 self._handle_wheel_like_event(data)
                 continue
 
+    # ---------------- wheel event (DB 저장만 + 현재 대차 라벨만 표시) ----------------
     def _handle_wheel_like_event(self, data):
         pos = str(data.get("pos", "")).strip().upper()
-        event_id = data.get("event_id")
-        if not event_id:
+        event_id = str(data.get("event_id", "") or "").strip()
+        if not pos or not event_id:
             return
-        event_id = str(event_id).strip()
 
-        # car_no
-        car_no = data.get("wheel_car_no")
-        if car_no is None:
-            car_no = data.get("car_no")
-        car_no_str = str(car_no).strip() if car_no is not None else ""
+        car_no = data.get("car_no") or data.get("wheel_car_no") or "none"
+        car_no_str = str(car_no).strip()
 
-        # 값 추출 (wheel_event: flat / car_update: nested)
-        if data.get("type") == "wheel_event":
-            w1_rot = data.get("wheel_1st_rotation", 0)
-            w1_pos = data.get("wheel_1st_position", 0)
-            w2_rot = data.get("wheel_2nd_rotation", 0)
-            w2_pos = data.get("wheel_2nd_position", 0)
-        else:
-            wheel = data.get("wheel", {})
-            if wheel is None or not isinstance(wheel, dict):
-                wheel = {}
+        wheel = data.get("wheel", {})
+        if isinstance(wheel, dict) and wheel:
             w1_rot = wheel.get("wheel_1st_rotation", 0)
             w1_pos = wheel.get("wheel_1st_position", 0)
             w2_rot = wheel.get("wheel_2nd_rotation", 0)
             w2_pos = wheel.get("wheel_2nd_position", 0)
+        else:
+            w1_rot = data.get("wheel_1st_rotation", data.get("wheel1_rotation", 0))
+            w1_pos = data.get("wheel_1st_position", data.get("wheel1_position", 0))
+            w2_rot = data.get("wheel_2nd_rotation", data.get("wheel2_rotation", 0))
+            w2_pos = data.get("wheel_2nd_position", data.get("wheel2_position", 0))
 
         status_1st = judge_one_wheel(w1_rot, w1_pos)
         status_2nd = judge_one_wheel(w2_rot, w2_pos)
 
-        # 라벨 표시(원하면 꺼도 됨)
-        if pos == "WS":
-            self.msg_4.setText("1st:{0}".format(status_1st))
-            self.msg_8.setText("2nd:{0}".format(status_2nd))
-        elif pos == "DS":
-            self.msg_7.setText("1st:{0}".format(status_1st))
-            self.msg_9.setText("2nd:{0}".format(status_2nd))
+        # ✅ DB 저장(항상)
+        self.wagon_ctrl.on_wheel_status(event_id, pos, status_1st, status_2nd, car_no_str)
 
-        # wagon_controller에 wheel 상태 전달 (stage1 조건 체크)
-        self.wagon_ctrl.on_wheel_status(
-            event_id=event_id,
-            pos=pos,
-            status_1st=status_1st,
-            status_2nd=status_2nd,
-            car_no_str=car_no_str
-        )
-
-    # ---------------- stage1: DB 1차 저장 ----------------
-    def _on_stage1_ready(self, rec):
-        # stage1은 HMI 표시 X, DB insert만
-        # (db_writer가 insert를 담당)
-        item = dict(rec)
-
-        # ts 처리: 문자열이면 datetime으로 변환 시도
-        ts = item.get("ts")
-        if isinstance(ts, str):
+        # ✅ 라벨은 "현재 대차"일 때만 표시
+        if self.current_event_id and event_id == self.current_event_id:
             try:
-                item["ts"] = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+                if pos == "WS":
+                    self.msg_4.setText(status_1st)
+                    self.msg_8.setText(status_2nd)
+                elif pos == "DS":
+                    self.msg_7.setText(status_1st)
+                    self.msg_9.setText(status_2nd)
             except Exception:
-                item["ts"] = datetime.now()
+                pass
 
-        self.db_writer.enqueue(item)
+    # ---------------- DB poller -> 표시 ----------------
+    def _on_db_record_ready(self, rec):
+        """
+        rec는 DB에서 읽은 '완성 row'.
+        ✅ 이제 여기서만 테이블/버튼/썸네일 표시한다.
+        """
+        if not isinstance(rec, dict):
+            return
 
-    # ---------------- final: 2구간 포함 완성 ----------------
-    def _on_final_ready(self, rec):
-        car_no_str = str(rec.get("car_no", "")).strip()
-        label_text = "N" if car_no_str == "none" else car_no_str
+        overall = combine_overall_wheel_status(
+            rec.get("ws_wheel1_status", ""),
+            rec.get("ws_wheel2_status", ""),
+            rec.get("ds_wheel1_status", ""),
+            rec.get("ds_wheel2_status", ""),
+        )
+        rec["wheel_overall"] = overall
 
-        # 1) 테이블 insert (final에서만)
+        # 테이블 insert
         self.table_manager.insert_record(rec)
 
-        # 2) 휠 상태 테이블 반영
-        self.table_manager.update_wheel_status(car_no_str, "WS", rec.get("ws_wheel1_status", ""), rec.get("ws_wheel2_status", ""))
-        self.table_manager.update_wheel_status(car_no_str, "DS", rec.get("ds_wheel1_status", ""), rec.get("ds_wheel2_status", ""))
+        # 버튼
+        car_no_str = str(rec.get("car_no", "none")).strip()
+        label_text = car_no_str if car_no_str.lower() != "none" else "N"
 
-        # 3) 버튼색/상태
-        max_db = max(
-            float(rec.get("ws1_db", 0.0)),
-            float(rec.get("ds1_db", 0.0)),
-            float(rec.get("ws2_db", 0.0)),
-            float(rec.get("ds2_db", 0.0)),
-        )
-        overall = rec.get("wheel_overall", "")
+        try:
+            max_db = max(
+                float(rec.get("ws1_db", 0.0)),
+                float(rec.get("ds1_db", 0.0)),
+                float(rec.get("ws2_db", 0.0)),
+                float(rec.get("ds2_db", 0.0)),
+            )
+        except Exception:
+            max_db = 0.0
+
         self.button_manager.push_front(label_text, max_db, overall)
 
-        # 4) DB: (stage1 insert 후) 2구간 update는 다음 파일(db_writer)에서 처리하도록 예정
-        # 지금은 안전하게 "완성본"도 enqueue (db_writer가 insert만이면 중복될 수 있으니,
-        # 다음 단계에서 db_writer를 update 지원으로 바꾸면 여기서 update로 바꿀 것)
-        item = dict(rec)
-        ts = item.get("ts")
-        if isinstance(ts, str):
-            try:
-                item["ts"] = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                item["ts"] = datetime.now()
-
-        self.db_writer.enqueue(item)
-
-        # 5) 썸네일(저장된 이미지) 표시
+        # 썸네일
         self._safe_set_label_path(self.image_1, rec.get("img_car_path", ""))
         self._safe_set_label_path(self.image_2, rec.get("img_ws1_path", ""))
         self._safe_set_label_path(self.image_3, rec.get("img_ds1_path", ""))
@@ -386,13 +375,6 @@ class MainWindow(QMainWindow):
 
     # ---------------- close ----------------
     def closeEvent(self, event):
-        left = self.wagon_ctrl.flush_remaining_records()
-        for rec in left:
-            try:
-                self.db_writer.enqueue(rec)
-            except Exception:
-                pass
-
         workers = [
             self.zmq_thread,
             self.rtspWS1, self.rtspDS1, self.rtspWS2, self.rtspDS2,
@@ -406,6 +388,12 @@ class MainWindow(QMainWindow):
                 w.wait(2000)
             except Exception:
                 pass
+
+        try:
+            self.db_poller.stop()
+            self.db_poller.wait(2000)
+        except Exception:
+            pass
 
         try:
             self.db_writer.stop()

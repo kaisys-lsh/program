@@ -1,515 +1,464 @@
 # controllers/wagon_controller.py
+# -*- coding: utf-8 -*-
+import os
 import time
 from datetime import datetime
+import threading
 
-from utils.image_utils import (
-    ws_car1_path,
-    ws_leak1_path,
-    ds_leak1_path,
-    ws_leak2_path,
-    ds_leak2_path,
-    ws_wheel1_path,
-    ds_wheel1_path,
-    save_bgr_image_to_file,
-)
-from utils.wheel_status_utils import combine_overall_wheel_status
+import cv2
+import pymysql
 
 
 class WagonController:
-    """
-    역할
-    - car_event START/END 로 "현재 대차 1구간" 세션을 만들고 종료 시 record 생성
-    - START 후 snapshot_sec가 지나면 (cam1 + wheel ws/ds) 프레임을 '메모리로' 캡처
-      -> END 시점에 car_no를 알고 저장(파일명 매칭)
-    - 1구간(WS1/DS1) dB peak + 해당 peak 프레임 저장
-    - 2구간(WS2/DS2) dB peak는 "큐 길이(delay_count)"로 매칭해서 저장
-      (큐 pop 시점에 2구간 peak를 해당 대차에 귀속)
-    - wheel_event(WS/DS) 상태가 둘 다 들어오면 stage1(DB insert) 준비
-    - 해당 대차가 2구간까지 매칭되면 final(HMI 표시 + DB update) 준비
-    """
+    _COL_TYPES = {
+        "event_id": "VARCHAR(64) NOT NULL",
+        "ts": "DATETIME NULL DEFAULT NULL",
+        "car_no": "VARCHAR(32) NULL DEFAULT NULL",
+
+        "ws1_db": "DOUBLE NULL DEFAULT NULL",
+        "ds1_db": "DOUBLE NULL DEFAULT NULL",
+        "ws2_db": "DOUBLE NULL DEFAULT NULL",
+        "ds2_db": "DOUBLE NULL DEFAULT NULL",
+
+        "img_car_path": "VARCHAR(255) NULL DEFAULT NULL",
+        "img_ws1_path": "VARCHAR(255) NULL DEFAULT NULL",
+        "img_ds1_path": "VARCHAR(255) NULL DEFAULT NULL",
+        "img_ws2_path": "VARCHAR(255) NULL DEFAULT NULL",
+        "img_ds2_path": "VARCHAR(255) NULL DEFAULT NULL",
+
+        "ws_wheel1_status": "VARCHAR(32) NULL DEFAULT NULL",
+        "ws_wheel2_status": "VARCHAR(32) NULL DEFAULT NULL",
+        "ds_wheel1_status": "VARCHAR(32) NULL DEFAULT NULL",
+        "ds_wheel2_status": "VARCHAR(32) NULL DEFAULT NULL",
+        "img_ws_wheel_path": "VARCHAR(255) NULL DEFAULT NULL",
+        "img_ds_wheel_path": "VARCHAR(255) NULL DEFAULT NULL",
+
+        "seq_no": "BIGINT NOT NULL DEFAULT 0",
+        "start_done": "TINYINT NOT NULL DEFAULT 0",
+        "car_no_done": "TINYINT NOT NULL DEFAULT 0",
+        "zone1_done": "TINYINT NOT NULL DEFAULT 0",
+        "zone2_done": "TINYINT NOT NULL DEFAULT 0",
+        "wheel_ws_done": "TINYINT NOT NULL DEFAULT 0",
+        "wheel_ds_done": "TINYINT NOT NULL DEFAULT 0",
+        "ui_done": "TINYINT NOT NULL DEFAULT 0",
+    }
 
     def __init__(
         self,
         delay_count,
         snapshot_sec,
-        on_set_car_label=None,
-        on_stage1_ready=None,
-        on_final_ready=None,
+        on_set_car_label,
+        on_stage1_ready,
+        db_host,
+        db_port,
+        db_user,
+        db_pw,
+        db_name="posco",
+        table_name="data",
     ):
-        self.delay_count = int(delay_count) if delay_count else 2
-        if self.delay_count < 1:
-            self.delay_count = 1
-
-        try:
-            self.snapshot_sec = float(snapshot_sec)
-        except Exception:
-            self.snapshot_sec = 1.0
+        self.delay_count = int(delay_count)
+        self.snapshot_sec = float(snapshot_sec) if snapshot_sec is not None else 0.0
 
         self.on_set_car_label = on_set_car_label
         self.on_stage1_ready = on_stage1_ready
-        self.on_final_ready = on_final_ready
 
-        # ----------------------------
-        # 최신 프레임 (RTSP에서 계속 업데이트)
-        # ----------------------------
-        self.latest_cam1_bgr = None
-        self.latest_ws1_bgr = None
-        self.latest_ds1_bgr = None
-        self.latest_ws2_bgr = None
-        self.latest_ds2_bgr = None
-        self.latest_wheel_ws_bgr = None
-        self.latest_wheel_ds_bgr = None
+        self.db_host = db_host
+        self.db_port = int(db_port)
+        self.db_user = db_user
+        self.db_pw = db_pw
+        self.db_name = db_name
+        self.table_name = table_name
 
-        # ----------------------------
-        # 현재 1구간 세션 상태(START~END)
-        # ----------------------------
-        self.in_wagon = False
-        self._start_mono = 0.0
-        self._snap_due_mono = 0.0
-        self._snap_taken = False
-        self._snap_cam1_bgr = None
-        self._snap_wheel_ws_bgr = None
-        self._snap_wheel_ds_bgr = None
+        self._lock = threading.Lock()
 
-        # 1구간 peak (WS1/DS1)
-        self._peak_ws1_db = 0.0
-        self._peak_ds1_db = 0.0
-        self._peak_ws1_bgr = None
-        self._peak_ds1_bgr = None
+        self.current_event_id = ""
+        self.current_seq_no = 0
 
-        # 2구간 peak (WS2/DS2) - "현재 2구간 대상"의 peak
-        self._peak_ws2_db = 0.0
-        self._peak_ds2_db = 0.0
-        self._peak_ws2_bgr = None
-        self._peak_ds2_bgr = None
+        self.latest_frames = {}
 
-        # ----------------------------
-        # END가 온 대차들을 순서대로 쌓는 큐(2구간 매칭용)
-        # - item: event_id (str)
-        # ----------------------------
-        self._car_queue = []
+        self.zone1_peak = {"ws1": 0.0, "ds1": 0.0}
+        self.zone2_peak = {"ws2": 0.0, "ds2": 0.0}
+        self.zone1_peak_frame = {"ws1": None, "ds1": None}
+        self.zone2_peak_frame = {"ws2": None, "ds2": None}
 
-        # ----------------------------
-        # event_id -> record(대차 1건)
-        # ----------------------------
-        self._records = {}  # event_id -> rec(dict)
+        self.save_root = os.path.join(os.getcwd(), "DATA")
+        self._ensure_dir(self.save_root)
 
-        # ----------------------------
-        # wheel 상태 저장 (event_id 기준)
-        # ----------------------------
-        self._wheel_map = {}  # event_id -> {"car_no":str, "WS":(s1,s2), "DS":(s1,s2)}
+    # ------------------------------------------------------------
+    # DB ensure
+    # ------------------------------------------------------------
+    def _connect_server(self):
+        return pymysql.connect(
+            host=self.db_host,
+            port=self.db_port,
+            user=self.db_user,
+            password=self.db_pw,
+            autocommit=True,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
 
-    # -------------------------------------------------
-    # 외부에서 RTSP 프레임 들어올 때 호출
-    # -------------------------------------------------
+    def _get_conn(self):
+        return pymysql.connect(
+            host=self.db_host,
+            port=self.db_port,
+            user=self.db_user,
+            password=self.db_pw,
+            database=self.db_name,
+            autocommit=True,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+    def _ensure_db_and_table(self):
+        # 1) DB 생성
+        conn = None
+        try:
+            conn = self._connect_server()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE DATABASE IF NOT EXISTS `{}` "
+                    "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci".format(self.db_name)
+                )
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+        # 2) TABLE 생성/보강
+        conn2 = None
+        try:
+            conn2 = self._get_conn()
+
+            cols_sql = []
+            cols_sql.append("id BIGINT NOT NULL AUTO_INCREMENT")
+            cols_sql.append("event_id VARCHAR(64) NOT NULL")
+            for k, t in self._COL_TYPES.items():
+                if k == "event_id":
+                    continue
+                cols_sql.append(f"`{k}` {t}")
+            cols_sql.append("PRIMARY KEY(id)")
+            cols_sql.append("UNIQUE KEY uq_event (event_id)")
+            cols_sql.append("INDEX idx_ts (ts)")
+            cols_sql.append("INDEX idx_car (car_no)")
+
+            sql_create = f"""
+            CREATE TABLE IF NOT EXISTS `{self.table_name}` (
+                {", ".join(cols_sql)}
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            with conn2.cursor() as cur:
+                cur.execute(sql_create)
+
+            def _exec_ignore(sql):
+                try:
+                    with conn2.cursor() as cur:
+                        cur.execute(sql)
+                except Exception:
+                    pass
+
+            _exec_ignore(f"ALTER TABLE `{self.table_name}` ADD UNIQUE KEY uq_event (event_id)")
+            for col_name, col_type in self._COL_TYPES.items():
+                if col_name == "event_id":
+                    continue
+                _exec_ignore(f"ALTER TABLE `{self.table_name}` ADD COLUMN `{col_name}` {col_type}")
+
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn2:
+                    conn2.close()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------
+    # DB helpers
+    # ------------------------------------------------------------
+    def _alloc_next_seq_no(self):
+        # ✅ 테이블 없으면 생성 후 MAX(seq_no) 조회
+        self._ensure_db_and_table()
+
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COALESCE(MAX(seq_no), 0) AS m FROM `{self.table_name}`")
+                row = cur.fetchone()
+                if row and "m" in row:
+                    return int(row["m"]) + 1
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+        with self._lock:
+            self.current_seq_no = self.current_seq_no + 1 if self.current_seq_no > 0 else 1
+            return self.current_seq_no
+
+    def _find_event_id_by_seq_no(self, seq_no):
+        # ✅ 테이블 없으면 생성 후 조회
+        self._ensure_db_and_table()
+
+        conn = None
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT event_id FROM `{self.table_name}` WHERE seq_no=%s LIMIT 1",
+                    (int(seq_no),),
+                )
+                row = cur.fetchone()
+                if row:
+                    return str(row.get("event_id", "")).strip()
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        return ""
+
+    # ------------------------------------------------------------
+    # image save helpers
+    # ------------------------------------------------------------
+    def _ensure_dir(self, d):
+        try:
+            if not os.path.exists(d):
+                os.makedirs(d)
+        except Exception:
+            pass
+
+    def _make_path(self, prefix, event_id):
+        day = datetime.now().strftime("%Y%m%d")
+        out_dir = os.path.join(self.save_root, day)
+        self._ensure_dir(out_dir)
+        ts = datetime.now().strftime("%H%M%S_%f")
+        return os.path.join(out_dir, f"{prefix}_{event_id}_{ts}.jpg")
+
+    def _save_bgr(self, bgr, prefix, event_id):
+        if bgr is None:
+            return ""
+        path = self._make_path(prefix, event_id)
+        try:
+            cv2.imwrite(path, bgr)
+            return path
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------
+    # public: frame / db / zmq events
+    # ------------------------------------------------------------
     def update_latest_frame(self, cam_id, bgr):
-        if cam_id == "cam1":
-            self.latest_cam1_bgr = bgr
-        elif cam_id == "ws1":
-            self.latest_ws1_bgr = bgr
-        elif cam_id == "ds1":
-            self.latest_ds1_bgr = bgr
-        elif cam_id == "ws2":
-            self.latest_ws2_bgr = bgr
-        elif cam_id == "ds2":
-            self.latest_ds2_bgr = bgr
-        elif cam_id == "wheel_ws":
-            self.latest_wheel_ws_bgr = bgr
-        elif cam_id == "wheel_ds":
-            self.latest_wheel_ds_bgr = bgr
+        if not cam_id or bgr is None:
+            return
+        with self._lock:
+            self.latest_frames[str(cam_id)] = bgr
 
-        # START 이후 snapshot_sec 지났으면 스냅샷 캡처(메모리)
-        self._maybe_take_snapshot()
-
-    def _maybe_take_snapshot(self):
-        if not self.in_wagon:
+    def on_db(self, cam_id, value):
+        if cam_id not in ("ws1", "ds1", "ws2", "ds2"):
             return
-        if self._snap_taken:
-            return
-
-        now_mono = time.monotonic()
-        if now_mono < self._snap_due_mono:
-            return
-
-        # 3개 다 있어야 "동시에" 캡처로 간주
-        if self.latest_cam1_bgr is None:
-            return
-        if self.latest_wheel_ws_bgr is None:
-            return
-        if self.latest_wheel_ds_bgr is None:
-            return
-
-        # 메모리에 복사(END에서 car_no 알고 저장)
         try:
-            self._snap_cam1_bgr = self.latest_cam1_bgr.copy()
-        except Exception:
-            self._snap_cam1_bgr = self.latest_cam1_bgr
-
-        try:
-            self._snap_wheel_ws_bgr = self.latest_wheel_ws_bgr.copy()
-        except Exception:
-            self._snap_wheel_ws_bgr = self.latest_wheel_ws_bgr
-
-        try:
-            self._snap_wheel_ds_bgr = self.latest_wheel_ds_bgr.copy()
-        except Exception:
-            self._snap_wheel_ds_bgr = self.latest_wheel_ds_bgr
-
-        self._snap_taken = True
-
-    # -------------------------------------------------
-    # 외부에서 dB 들어올 때 호출
-    # -------------------------------------------------
-    def on_db(self, cam_id, db_value):
-        try:
-            fv = float(db_value)
+            fv = float(value)
         except Exception:
             fv = 0.0
 
-        if self.in_wagon:
-            # 1구간 peak
-            if cam_id == "ws1":
-                if fv >= self._peak_ws1_db:
-                    self._peak_ws1_db = fv
-                    self._peak_ws1_bgr = self.latest_ws1_bgr
-            elif cam_id == "ds1":
-                if fv >= self._peak_ds1_db:
-                    self._peak_ds1_db = fv
-                    self._peak_ds1_bgr = self.latest_ds1_bgr
+        with self._lock:
+            if cam_id in ("ws1", "ds1"):
+                if fv >= float(self.zone1_peak.get(cam_id, 0.0)):
+                    self.zone1_peak[cam_id] = fv
+                    self.zone1_peak_frame[cam_id] = self.latest_frames.get(cam_id, None)
+            else:
+                if fv >= float(self.zone2_peak.get(cam_id, 0.0)):
+                    self.zone2_peak[cam_id] = fv
+                    self.zone2_peak_frame[cam_id] = self.latest_frames.get(cam_id, None)
 
-            # 2구간 peak (큐 길이로 "2구간 대상이 존재"할 때만 갱신)
-            if len(self._car_queue) >= (self.delay_count - 1):
-                if cam_id == "ws2":
-                    if fv >= self._peak_ws2_db:
-                        self._peak_ws2_db = fv
-                        self._peak_ws2_bgr = self.latest_ws2_bgr
-                elif cam_id == "ds2":
-                    if fv >= self._peak_ds2_db:
-                        self._peak_ds2_db = fv
-                        self._peak_ds2_bgr = self.latest_ds2_bgr
-
-    # -------------------------------------------------
-    # car_event 처리(START/END)
-    # -------------------------------------------------
     def on_car_event(self, data):
         if not isinstance(data, dict):
             return
-
-        if data.get("type") != "car_event":
-            return
-
         ev = str(data.get("event", "")).strip().upper()
+        event_id = str(data.get("event_id", "") or "").strip()
+        if not ev or not event_id:
+            return
         if ev == "START":
-            self._on_start()
+            self._handle_start(event_id)
+        elif ev == "END":
+            self._handle_end(event_id)
+
+    def on_car_no(self, data):
+        if not isinstance(data, dict):
+            return
+        event_id = str(data.get("event_id", "") or "").strip()
+        car_no = str(data.get("car_no", "") or "").strip()
+        if not event_id:
+            return
+        if not car_no:
+            car_no = "NONE"
+        try:
+            if self.on_set_car_label:
+                self.on_set_car_label(car_no)
+        except Exception:
+            pass
+        self._emit_patch({"event_id": event_id, "car_no": car_no, "car_no_done": 1})
+
+    def on_wheel_status(self, event_id, pos, status_1st, status_2nd, car_no_str=""):
+        eid = str(event_id or "").strip()
+        if not eid:
+            return
+        p = str(pos or "").strip().upper()
+
+        patch = {"event_id": eid}
+        if car_no_str:
+            patch["car_no"] = str(car_no_str).strip()
+
+        if p == "WS":
+            patch["ws_wheel1_status"] = str(status_1st or "")
+            patch["ws_wheel2_status"] = str(status_2nd or "")
+            patch["wheel_ws_done"] = 1
+        elif p == "DS":
+            patch["ds_wheel1_status"] = str(status_1st or "")
+            patch["ds_wheel2_status"] = str(status_2nd or "")
+            patch["wheel_ds_done"] = 1
+        else:
             return
 
-        if ev == "END":
-            event_id = data.get("event_id")
-            car_no = data.get("car_no")
-            self._on_end(event_id, car_no)
-            return
+        self._emit_patch(patch)
 
-    def _on_start(self):
-        self.in_wagon = True
+    # ------------------------------------------------------------
+    # internal: START / END
+    # ------------------------------------------------------------
+    def _reset_zone1(self):
+        self.zone1_peak["ws1"] = 0.0
+        self.zone1_peak["ds1"] = 0.0
+        self.zone1_peak_frame["ws1"] = None
+        self.zone1_peak_frame["ds1"] = None
 
-        self._start_mono = time.monotonic()
-        self._snap_due_mono = self._start_mono + self.snapshot_sec
-        self._snap_taken = False
-        self._snap_cam1_bgr = None
-        self._snap_wheel_ws_bgr = None
-        self._snap_wheel_ds_bgr = None
+    def _reset_zone2(self):
+        self.zone2_peak["ws2"] = 0.0
+        self.zone2_peak["ds2"] = 0.0
+        self.zone2_peak_frame["ws2"] = None
+        self.zone2_peak_frame["ds2"] = None
 
-        # 1구간 peak reset
-        self._peak_ws1_db = 0.0
-        self._peak_ds1_db = 0.0
-        self._peak_ws1_bgr = None
-        self._peak_ds1_bgr = None
+    def _handle_start(self, event_id):
+        seq_no = self._alloc_next_seq_no()
 
-        # UI 라벨
-        if self.on_set_car_label is not None:
-            try:
+        with self._lock:
+            self.current_event_id = event_id
+            self.current_seq_no = seq_no
+            self._reset_zone1()
+
+        img_car = self._save_bgr(self.latest_frames.get("cam1", None), "car", event_id)
+        img_ws1 = self._save_bgr(self.latest_frames.get("ws1", None), "ws1_snap", event_id)
+        img_ds1 = self._save_bgr(self.latest_frames.get("ds1", None), "ds1_snap", event_id)
+        img_ws2 = self._save_bgr(self.latest_frames.get("ws2", None), "ws2_snap", event_id)
+        img_ds2 = self._save_bgr(self.latest_frames.get("ds2", None), "ds2_snap", event_id)
+        img_w_ws = self._save_bgr(self.latest_frames.get("wheel_ws", None), "wheel_ws", event_id)
+        img_w_ds = self._save_bgr(self.latest_frames.get("wheel_ds", None), "wheel_ds", event_id)
+
+        self._emit_patch({
+            "event_id": event_id,
+            "ts": datetime.now(),
+            "seq_no": seq_no,
+
+            "img_car_path": img_car,
+            "img_ws1_path": img_ws1,
+            "img_ds1_path": img_ds1,
+            "img_ws2_path": img_ws2,
+            "img_ds2_path": img_ds2,
+
+            "img_ws_wheel_path": img_w_ws,
+            "img_ds_wheel_path": img_w_ds,
+
+            "start_done": 1,
+            "ui_done": 0,
+        })
+
+        try:
+            if self.on_set_car_label:
                 self.on_set_car_label("START")
-            except Exception:
-                pass
-
-    def _normalize_car_no(self, car_no_raw):
-        if car_no_raw is None:
-            return "none"
-        s = str(car_no_raw).strip()
-        if not s:
-            return "none"
-        if s.upper() == "FFF":
-            return "none"
-        return s
-
-    def _on_end(self, event_id, car_no_raw):
-        # END는 "현재 세션 종료"
-        self.in_wagon = False
-
-        # event_id는 필수(없으면 유실로 처리)
-        if not event_id:
-            if self.on_set_car_label is not None:
-                try:
-                    self.on_set_car_label("END(no event_id)")
-                except Exception:
-                    pass
-            return
-
-        event_id_str = str(event_id).strip()
-        car_no_str = self._normalize_car_no(car_no_raw)
-
-        # UI 라벨
-        if self.on_set_car_label is not None:
-            try:
-                if car_no_str == "none":
-                    self.on_set_car_label("END: N")
-                else:
-                    self.on_set_car_label("END: {0}".format(car_no_str))
-            except Exception:
-                pass
-
-        ts = datetime.now()
-
-        # ----------------------------
-        # END 시점에 스냅샷/peak 이미지 저장(파일)
-        # ----------------------------
-        img_car_path = ""
-        img_ws_wheel_path = ""
-        img_ds_wheel_path = ""
-        img_ws1_path = ""
-        img_ds1_path = ""
-
-        # car snapshot
-        car_bgr = self._snap_cam1_bgr if self._snap_cam1_bgr is not None else self.latest_cam1_bgr
-        if car_bgr is not None:
-            p = ws_car1_path(ts, car_no_str)
-            if save_bgr_image_to_file(car_bgr, p):
-                img_car_path = p
-
-        # wheel snapshots (WS/DS)
-        wws_bgr = self._snap_wheel_ws_bgr if self._snap_wheel_ws_bgr is not None else self.latest_wheel_ws_bgr
-        if wws_bgr is not None:
-            p = ws_wheel1_path(ts, car_no_str)
-            if save_bgr_image_to_file(wws_bgr, p):
-                img_ws_wheel_path = p
-
-        wds_bgr = self._snap_wheel_ds_bgr if self._snap_wheel_ds_bgr is not None else self.latest_wheel_ds_bgr
-        if wds_bgr is not None:
-            p = ds_wheel1_path(ts, car_no_str)
-            if save_bgr_image_to_file(wds_bgr, p):
-                img_ds_wheel_path = p
-
-        # leak1 peak frames (WS1/DS1)
-        if self._peak_ws1_bgr is not None:
-            p = ws_leak1_path(ts, car_no_str)
-            if save_bgr_image_to_file(self._peak_ws1_bgr, p):
-                img_ws1_path = p
-
-        if self._peak_ds1_bgr is not None:
-            p = ds_leak1_path(ts, car_no_str)
-            if save_bgr_image_to_file(self._peak_ds1_bgr, p):
-                img_ds1_path = p
-
-        # ----------------------------
-        # record 생성(2구간/휠은 나중에 채움)
-        # ----------------------------
-        rec = {
-            "event_id": event_id_str,
-            "ts": ts.strftime("%Y-%m-%d %H:%M:%S"),
-            "car_no": car_no_str,
-
-            "ws1_db": float(self._peak_ws1_db),
-            "ds1_db": float(self._peak_ds1_db),
-            "ws2_db": 0.0,
-            "ds2_db": 0.0,
-
-            "img_car_path": img_car_path,
-            "img_ws1_path": img_ws1_path,
-            "img_ds1_path": img_ds1_path,
-            "img_ws2_path": "",
-            "img_ds2_path": "",
-
-            # 휠(스냅샷 이미지 경로는 여기서 확보)
-            "ws_wheel1_status": "",
-            "ws_wheel2_status": "",
-            "ds_wheel1_status": "",
-            "ds_wheel2_status": "",
-            "img_ws_wheel_path": img_ws_wheel_path,
-            "img_ds_wheel_path": img_ds_wheel_path,
-
-            # 내부 플래그
-            "_stage1_ready": False,
-            "_zone2_ready": False,
-        }
-
-        self._records[event_id_str] = rec
-
-        # 2구간 매칭 큐에 event_id push
-        self._car_queue.append(event_id_str)
-
-        # wheel 상태가 이미 들어와있으면 stage1 만들기
-        self._try_stage1(event_id_str)
-
-        # 큐가 설정치 이상이면 pop -> 2구간 매칭
-        self._try_pop_zone2()
-
-    # -------------------------------------------------
-    # wheel 상태(WS/DS) 업데이트
-    # -------------------------------------------------
-    def on_wheel_status(self, event_id, pos, status_1st, status_2nd, car_no_str=None):
-        if not event_id:
-            return
-        event_id_str = str(event_id).strip()
-        pos_str = str(pos).strip().upper()
-
-        if event_id_str not in self._wheel_map:
-            self._wheel_map[event_id_str] = {"car_no": "", "WS": None, "DS": None}
-
-        if car_no_str is not None:
-            self._wheel_map[event_id_str]["car_no"] = str(car_no_str).strip()
-
-        if pos_str == "WS":
-            self._wheel_map[event_id_str]["WS"] = (status_1st, status_2nd)
-        elif pos_str == "DS":
-            self._wheel_map[event_id_str]["DS"] = (status_1st, status_2nd)
-
-        self._try_stage1(event_id_str)
-
-    def _try_stage1(self, event_id_str):
-        # END가 먼저 와서 record가 있어야 stage1 가능
-        if event_id_str not in self._records:
-            return
-
-        rec = self._records[event_id_str]
-        if rec.get("_stage1_ready", False):
-            # 이미 stage1 emit 된 상태면, zone2 준비됐는지 체크만
-            if rec.get("_zone2_ready", False):
-                self._emit_final(event_id_str)
-            return
-
-        w = self._wheel_map.get(event_id_str)
-        if w is None:
-            return
-
-        ws_pair = w.get("WS")
-        ds_pair = w.get("DS")
-        if ws_pair is None or ds_pair is None:
-            return
-
-        # stage1 채우기(휠)
-        rec["ws_wheel1_status"] = ws_pair[0]
-        rec["ws_wheel2_status"] = ws_pair[1]
-        rec["ds_wheel1_status"] = ds_pair[0]
-        rec["ds_wheel2_status"] = ds_pair[1]
-        rec["_stage1_ready"] = True
-
-        # stage1(DB insert) 콜백
-        if self.on_stage1_ready is not None:
-            try:
-                self.on_stage1_ready(rec)
-            except Exception:
-                pass
-
-        # zone2가 먼저 준비되어 있던 케이스면 바로 final
-        if rec.get("_zone2_ready", False):
-            self._emit_final(event_id_str)
-
-    # -------------------------------------------------
-    # 2구간 매칭 (큐 pop)
-    # -------------------------------------------------
-    def _try_pop_zone2(self):
-        # 큐 길이가 설정치 이상이면 pop해서 2구간을 해당 대차에 귀속
-        while len(self._car_queue) >= self.delay_count:
-            target_id = self._car_queue.pop(0)
-
-            rec = self._records.get(target_id)
-            if rec is None:
-                # 이상 케이스: peak reset 하고 넘어감
-                self._reset_zone2_peak()
-                continue
-
-            ts = datetime.now()
-            car_no_str = str(rec.get("car_no", "none")).strip()
-            if not car_no_str:
-                car_no_str = "none"
-
-            # 2구간 peak 이미지 저장
-            img_ws2_path = ""
-            img_ds2_path = ""
-
-            if self._peak_ws2_bgr is not None:
-                p = ws_leak2_path(ts, car_no_str)
-                if save_bgr_image_to_file(self._peak_ws2_bgr, p):
-                    img_ws2_path = p
-
-            if self._peak_ds2_bgr is not None:
-                p = ds_leak2_path(ts, car_no_str)
-                if save_bgr_image_to_file(self._peak_ds2_bgr, p):
-                    img_ds2_path = p
-
-            rec["ws2_db"] = float(self._peak_ws2_db)
-            rec["ds2_db"] = float(self._peak_ds2_db)
-            rec["img_ws2_path"] = img_ws2_path
-            rec["img_ds2_path"] = img_ds2_path
-            rec["_zone2_ready"] = True
-
-            # 다음 대차를 위해 zone2 peak reset
-            self._reset_zone2_peak()
-
-            # stage1까지 준비되었으면 final emit
-            if rec.get("_stage1_ready", False):
-                self._emit_final(target_id)
-            # stage1이 아직이면, stage1 준비되는 순간(_try_stage1)에서 final 처리됨
-
-    def _reset_zone2_peak(self):
-        self._peak_ws2_db = 0.0
-        self._peak_ds2_db = 0.0
-        self._peak_ws2_bgr = None
-        self._peak_ds2_bgr = None
-
-    # -------------------------------------------------
-    # final emit (HMI 표시 + DB update)
-    # -------------------------------------------------
-    def _emit_final(self, event_id_str):
-        rec = self._records.get(event_id_str)
-        if rec is None:
-            return
-
-        # wheel overall 계산(버튼 표시용으로 main에서 쓰면 됨)
-        ws_w1 = rec.get("ws_wheel1_status", "")
-        ws_w2 = rec.get("ws_wheel2_status", "")
-        ds_w1 = rec.get("ds_wheel1_status", "")
-        ds_w2 = rec.get("ds_wheel2_status", "")
-        rec["wheel_overall"] = combine_overall_wheel_status(ws_w1, ws_w2, ds_w1, ds_w2)
-
-        if self.on_final_ready is not None:
-            try:
-                self.on_final_ready(rec)
-            except Exception:
-                pass
-
-        # 정리(메모리 누적 방지)
-        try:
-            del self._records[event_id_str]
-        except Exception:
-            pass
-        try:
-            if event_id_str in self._wheel_map:
-                del self._wheel_map[event_id_str]
         except Exception:
             pass
 
-    # -------------------------------------------------
-    # 종료 시 남은 것 처리용(선택)
-    # -------------------------------------------------
-    def flush_remaining_records(self):
-        """
-        종료 직전 남아있는 record 반환.
-        - 아직 final 안 된 것들을 그대로 넘김(원하면 main에서 insert/update 처리)
-        """
-        left = []
-        for k in list(self._records.keys()):
-            rec = self._records.get(k)
-            if rec is not None:
-                left.append(rec)
-        return left
+        if self.snapshot_sec > 0.0:
+            try:
+                time.sleep(self.snapshot_sec)
+            except Exception:
+                pass
+
+    def _handle_end(self, event_id):
+        eid = str(event_id or "").strip()
+        if not eid:
+            return
+
+        with self._lock:
+            seq_no = int(self.current_seq_no) if self.current_seq_no else 0
+
+            ws1_peak = float(self.zone1_peak.get("ws1", 0.0))
+            ds1_peak = float(self.zone1_peak.get("ds1", 0.0))
+            ws1_frame = self.zone1_peak_frame.get("ws1", None)
+            ds1_frame = self.zone1_peak_frame.get("ds1", None)
+
+            ws2_peak = float(self.zone2_peak.get("ws2", 0.0))
+            ds2_peak = float(self.zone2_peak.get("ds2", 0.0))
+            ws2_frame = self.zone2_peak_frame.get("ws2", None)
+            ds2_frame = self.zone2_peak_frame.get("ds2", None)
+
+            self._reset_zone1()
+
+        img_ws1_peak = self._save_bgr(ws1_frame, "ws1_peak", eid) if ws1_frame is not None else ""
+        img_ds1_peak = self._save_bgr(ds1_frame, "ds1_peak", eid) if ds1_frame is not None else ""
+
+        self._emit_patch({
+            "event_id": eid,
+            "ws1_db": ws1_peak,
+            "ds1_db": ds1_peak,
+            "img_ws1_path": img_ws1_peak if img_ws1_peak else "",
+            "img_ds1_path": img_ds1_peak if img_ds1_peak else "",
+            "zone1_done": 1,
+        })
+
+        target_eid = ""
+        if seq_no > 0:
+            target_seq = seq_no - (self.delay_count - 1)
+            if target_seq > 0:
+                target_eid = self._find_event_id_by_seq_no(target_seq)
+
+        if target_eid:
+            img_ws2_peak = self._save_bgr(ws2_frame, "ws2_peak", target_eid) if ws2_frame is not None else ""
+            img_ds2_peak = self._save_bgr(ds2_frame, "ds2_peak", target_eid) if ds2_frame is not None else ""
+
+            self._emit_patch({
+                "event_id": target_eid,
+                "ws2_db": ws2_peak,
+                "ds2_db": ds2_peak,
+                "img_ws2_path": img_ws2_peak if img_ws2_peak else "",
+                "img_ds2_path": img_ds2_peak if img_ds2_peak else "",
+                "zone2_done": 1,
+            })
+
+        with self._lock:
+            self._reset_zone2()
+            if self.current_event_id == eid:
+                self.current_event_id = ""
+
+    # ------------------------------------------------------------
+    # patch emit
+    # ------------------------------------------------------------
+    def _emit_patch(self, patch):
+        if not isinstance(patch, dict):
+            return
+        try:
+            if self.on_stage1_ready:
+                self.on_stage1_ready(patch)
+        except Exception:
+            pass

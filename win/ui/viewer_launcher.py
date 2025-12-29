@@ -16,13 +16,19 @@ class ViewerLauncher:
             QtWidgets.QMessageBox.information(parent, "안내", "버튼에 대차번호가 없습니다.")
             return
 
-        if raw == "N":
+        # ✅ 버튼에 "090\n정상" 이런 식으로 들어오므로 첫 줄만 사용
+        first_line = raw.splitlines()[0].strip()
+
+        # ✅ N / none 처리 (N\n정상도 여기서 OK)
+        if first_line.upper() == "N":
             car_no = "none"
         else:
-            m = re.search(r"\b(\d{3})\b", raw)
-            car_no = m.group(1) if m else raw
+            # ✅ 3자리 번호만 뽑기 (예: "090", "090 비정상" 등 방어)
+            m = re.search(r"\b(\d{3})\b", first_line)
+            car_no = m.group(1) if m else first_line.strip()
 
-        if (not car_no) or (car_no != "none" and not car_no.isdigit()):
+        # ✅ 유효성 체크
+        if (not car_no) or (car_no != "none" and (not car_no.isdigit() or len(car_no) != 3)):
             QtWidgets.QMessageBox.information(parent, "안내", "버튼에 대차번호가 없습니다.")
             return
 
