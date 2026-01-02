@@ -1,162 +1,196 @@
-# core/car_event_bus.py
+# linux/core/car_event_bus.py
 # --------------------------------------------------
-# Car / Wheel 이벤트를 event_id 기준으로 매칭하는 중앙 버스
-#
-# 핵심 정책
-# - 순서 강제 ❌
-# - event_id 매칭 100% 보장 ⭕
-# - START 시 event_id 생성
-# - car_no 확정 시 car_no → event_id 바인딩
-# - wheel_status는 매핑 있으면 즉시 송신
-#   매핑 없으면 pending에 보관했다가 나중에 송신
+# [수정] CarEventBus가 상태 머신(Start/End 판단)을 통합 관리함
 # --------------------------------------------------
 
 import time
 import threading
 import uuid
 
+from config import config
+from utils.shared_mem_utils import write_car_number
 
 class CarEventBus:
-    def __init__(self, zmq_sender):
-        """
-        zmq_sender : ZmqSendWorker 인스턴스 (send(dict) 메서드 보유)
-        """
+    def __init__(self, zmq_sender, debug_print=False):
         self.sender = zmq_sender
+        self.debug_print = bool(debug_print)
         self.lock = threading.Lock()
 
-        # ★ 현재 진행 중인 세션 event_id
+        # ------------------------------------------------
+        # [통합] 상태 머신 변수들
+        # ------------------------------------------------
+        self.in_wagon = False
+        self.no_digit_frames = 0
+        self.max_no_digit = int(getattr(config, "NO_DIGIT_END_FRAMES", 5))
+        self.session_best_code = "FFF"
+        
+        # 기존 변수들
         self.current_event_id = None
-
-        # ★ car_no -> event_id 매핑
         self.car_no_to_event = {}
-
-        # ★ car_no 미확정 상태에서 들어온 wheel_status 임시 보관
-        # 구조: { car_no(str) : [wheel_payload, ...] }
         self.pending_wheels = {}
 
-    # --------------------------------------------------
-    # 내부 유틸
-    # --------------------------------------------------
+        self.max_pending_per_car = int(getattr(config, "CARBUS_MAX_PENDING_PER_CAR", 20))
+        self.max_map_size = int(getattr(config, "CARBUS_MAX_MAP_SIZE", 200))
+        self.send_end_event = bool(getattr(config, "CARBUS_SEND_END_EVENT", False))
+
     def _now_ms(self):
         return int(time.time() * 1000)
 
-    def _new_event_id(self):
-        # 가독성 있는 event_id
-        return f"car-{self._now_ms()}-{uuid.uuid4().hex[:6]}"
+    def _make_event_id(self):
+        return "car-{0}-{1}".format(self._now_ms(), uuid.uuid4().hex[:6])
 
-    # --------------------------------------------------
-    # START 이벤트
-    # --------------------------------------------------
-    def send_start(self):
+    def _normalize_car_no_3(self, s):
+        if s is None: return "FFF"
+        t = str(s).strip()
+        if t == "" or t.upper() == "NONE": return "FFF"
+        digits = "".join([ch for ch in t if ch.isdigit()])
+        if len(digits) != 3: return "FFF"
+        return digits
+
+    # ---------------------------
+    # [핵심] 상태 업데이트 (Main에서 호출)
+    # ---------------------------
+    def update_wagon_status(self, has_digit, frame_code, shm_array=None):
         """
-        대차 진입 감지 시 호출
-        - event_id 생성
-        - current_event_id 갱신
-        - ZMQ START 송신
-        """
-        with self.lock:
-            event_id = self._new_event_id()
-            self.current_event_id = event_id
-
-            payload = {
-                "type": "car_event",
-                "event": "START",
-                "event_id": event_id,
-                "ts_ms": self._now_ms(),
-            }
-
-            self.sender.send(payload)
-            return event_id
-
-    # --------------------------------------------------
-    # 대차번호 확정
-    # --------------------------------------------------
-    def send_car_no(self, car_no):
-        """
-        대차번호 확정 시 호출
-        - 현재 event_id에 car_no 바인딩
-        - car_no 메시지 송신
-        - pending wheel 이 있으면 즉시 매칭해서 송신
+        Main loop에서 매 프레임 호출.
+        - has_digit: 현재 프레임에 숫자가 있는가? (True/False)
+        - frame_code: 현재 프레임에서 조합된 번호 (없으면 "FFF")
+        - shm_array: 종료 시 번호를 쓸 공유메모리 배열
         """
         with self.lock:
-            if self.current_event_id is None:
-                # 비정상 케이스 방어
-                return None
+            if has_digit:
+                # [숫자 감지됨]
+                self.no_digit_frames = 0
+                
+                # 유효한 코드라면 best_code 갱신
+                if frame_code and frame_code != "FFF":
+                    self.session_best_code = frame_code
 
-            event_id = self.current_event_id
-            self.car_no_to_event[car_no] = event_id
+                # 아직 진입 상태가 아니라면 -> START
+                if not self.in_wagon:
+                    self._start_session()
+            else:
+                # [숫자 없음]
+                if self.in_wagon:
+                    self.no_digit_frames += 1
+                    # 일정 시간 이상 안 보이면 -> END
+                    if self.no_digit_frames >= self.max_no_digit:
+                        self._end_session(shm_array)
 
-            payload = {
-                "type": "car_no",
-                "event_id": event_id,
-                "car_no": car_no,
-                "ts_ms": self._now_ms(),
-            }
-            self.sender.send(payload)
+    def _start_session(self):
+        """내부 호출용: 세션 시작"""
+        self.in_wagon = True
+        self.session_best_code = "FFF"
+        self.no_digit_frames = 0
+        
+        # 기존 send_start 로직
+        if self.current_event_id is not None:
+            return 
 
-            # ★ pending 되어 있던 wheel_status 처리
-            if car_no in self.pending_wheels:
-                for wheel_payload in self.pending_wheels[car_no]:
-                    wheel_payload["event_id"] = event_id
-                    wheel_payload["ts_ms"] = self._now_ms()
-                    self.sender.send(wheel_payload)
+        self.current_event_id = self._make_event_id()
+        self._send({
+            "type": "car_event",
+            "event": "START",
+            "car_no": None,
+            "event_id": self.current_event_id,
+            "ts_ms": self._now_ms(),
+        })
+        if self.debug_print:
+            print(f"[BUS] AUTO START (ID: {self.current_event_id})")
 
-                del self.pending_wheels[car_no]
+    def _end_session(self, shm_array):
+        """내부 호출용: 세션 종료 및 확정"""
+        final_code = self.session_best_code
+        if self.debug_print:
+            print(f"[BUS] AUTO END -> Final Code: {final_code}")
 
-            return event_id
+        # 1. ZMQ 전송 (CAR_NO)
+        self._internal_send_car_no(final_code)
 
-    # --------------------------------------------------
-    # 휠 상태 수신
-    # --------------------------------------------------
-    def on_wheel_status(self, wheel_payload):
-        """
-        wheel_flag_watcher 에서 호출
-        wheel_payload 예:
-        {
-            "type": "wheel_status",
-            "car_no": "090",
-            "ws": {...},
-            "ds": {...}
-        }
-        """
-        with self.lock:
-            car_no = wheel_payload.get("car_no")
-            if not car_no:
-                return
+        # 2. SHM 쓰기
+        if shm_array is not None:
+            # block=True로 휠 프로그램 동기화 대기
+            # (Bus 스레드 혹은 Main 호출 스레드에서 실행되지만, 
+            #  여기서는 Main 루프의 흐름을 방해하지 않도록 설계됨)
+            ok = write_car_number(shm_array, final_code, block=True, timeout_sec=1.0)
+            if not ok and self.debug_print:
+                print(f"[BUS-WARN] SHM write timeout for {final_code}")
 
-            # ★ 이미 car_no → event_id 매핑이 있으면 즉시 송신
-            if car_no in self.car_no_to_event:
-                event_id = self.car_no_to_event[car_no]
-                wheel_payload["event_id"] = event_id
-                wheel_payload["ts_ms"] = self._now_ms()
-                self.sender.send(wheel_payload)
-                return
+        # 3. 상태 초기화
+        self.in_wagon = False
+        self.session_best_code = "FFF"
+        self.no_digit_frames = 0
+        self.current_event_id = None
 
-            # ★ 아직 매핑이 없으면 pending
-            if car_no not in self.pending_wheels:
-                self.pending_wheels[car_no] = []
+    def _internal_send_car_no(self, car_no_str):
+        car_no = self._normalize_car_no_3(car_no_str)
+        if self.current_event_id is None:
+            self.current_event_id = self._make_event_id()
+        
+        event_id = self.current_event_id
+        self.car_no_to_event[car_no] = event_id
+        self._trim_map_if_needed()
 
-            # event_id 는 아직 붙이지 않음
-            self.pending_wheels[car_no].append(wheel_payload)
+        self._send({
+            "type": "car_no",
+            "event_id": event_id,
+            "car_no": car_no,
+            "ts_ms": self._now_ms(),
+        })
 
-    # --------------------------------------------------
-    # END (선택적)
-    # --------------------------------------------------
-    def send_end(self):
-        """
-        세션 종료가 명확할 경우 호출
-        (필수는 아님 – 구조상 START + car_no + wheel 만으로도 매칭 가능)
-        """
-        with self.lock:
-            if self.current_event_id is None:
-                return
-
-            payload = {
+        if self.send_end_event:
+            self._send({
                 "type": "car_event",
                 "event": "END",
-                "event_id": self.current_event_id,
+                "car_no": car_no,
+                "event_id": event_id,
                 "ts_ms": self._now_ms(),
-            }
-            self.sender.send(payload)
+            })
 
-            self.current_event_id = None
+        self._flush_pending_wheels_locked(car_no, event_id)
+
+    # ---------------------------
+    # 기존 유틸 메서드 (유지)
+    # ---------------------------
+    def _trim_map_if_needed(self):
+        if len(self.car_no_to_event) <= self.max_map_size: return
+        keys = list(self.car_no_to_event.keys())
+        cut = len(keys) - self.max_map_size
+        for i in range(cut):
+            self.car_no_to_event.pop(keys[i], None)
+
+    def _trim_pending_if_needed(self, car_no):
+        lst = self.pending_wheels.get(car_no, None)
+        if lst and len(lst) > self.max_pending_per_car:
+            self.pending_wheels[car_no] = lst[-self.max_pending_per_car:]
+
+    def _send(self, payload):
+        if self.debug_print: print("[BUS] SEND:", payload)
+        if self.sender: self.sender.send(payload)
+
+    def on_wheel_status(self, wheel_payload):
+        if wheel_payload is None: return
+        car_no = self._normalize_car_no_3(wheel_payload.get("car_no", None))
+
+        with self.lock:
+            if car_no in self.car_no_to_event:
+                wheel_payload["event_id"] = self.car_no_to_event[car_no]
+                wheel_payload["ts_ms"] = self._now_ms()
+                self._send(wheel_payload)
+            else:
+                if car_no not in self.pending_wheels:
+                    self.pending_wheels[car_no] = []
+                self.pending_wheels[car_no].append(wheel_payload)
+                self._trim_pending_if_needed(car_no)
+                if self.debug_print:
+                    print(f"[BUS] wheel pending: {car_no} count={len(self.pending_wheels[car_no])}")
+
+    def _flush_pending_wheels_locked(self, car_no, event_id):
+        lst = self.pending_wheels.pop(car_no, None)
+        if not lst: return
+        if self.debug_print:
+            print(f"[BUS] flush pending: {car_no} count={len(lst)}")
+        for p in lst:
+            p["event_id"] = event_id
+            p["ts_ms"] = self._now_ms()
+            self._send(p)
