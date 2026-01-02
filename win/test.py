@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer
 
 
-ZMQ_PULL_CONNECT = "tcp://192.168.0.103:5577"
+ZMQ_PULL_CONNECT = "tcp://127.0.0.1:5888"
 
 
 def _fmt_wheel(rot, pos):

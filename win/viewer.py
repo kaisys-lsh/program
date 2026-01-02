@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtCore import Qt
 
-from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
+from utils.color_json_utils import load_thresholds_from_json, save_thresholds_to_json
 
 # 작업 디렉토리 고정
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
