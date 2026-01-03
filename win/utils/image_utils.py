@@ -1,124 +1,122 @@
-#utils/image_utils.py#
+# utils/image_utils.py
+# --------------------------------------------------
+# 이미지 저장 + OpenCV->QImage 변환 + QLabel 표시 유틸 (통합본)
+# --------------------------------------------------
+
 import os
+import cv2
 from datetime import datetime
 
-import cv2
-import numpy as np
-from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtCore import Qt
 
 from config.config import DATA_ROOT
 
-# ─────────────────────────────────────────
-# QImage / OpenCV 변환
-# ─────────────────────────────────────────
-def cvimg_to_qimage(img_bgr):
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    h, w, ch = img_rgb.shape
-    return QImage(img_rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
 
-def decode_jpeg_to_bgr(jpg_bytes: bytes):
-    arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)  # BGR
-    return img
+def _ensure_dir(path: str):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
 
-def qimage_from_bgr(img_bgr):
-    if img_bgr is None:
-        return None
-    return cvimg_to_qimage(img_bgr)
 
-def set_label_pixmap_fill(label, pixmap):
+# ==================================================
+# 1) 파일 저장
+# ==================================================
+def event_dir(event_id: str) -> str:
+    # ✅ event_id None/빈값 방어
+    if not event_id:
+        event_id = "UNKNOWN"
+    event_id = str(event_id).strip()
+    if not event_id:
+        event_id = "UNKNOWN"
+
+    base = os.path.join(DATA_ROOT, event_id)
+    _ensure_dir(base)
+    return base
+
+
+def save_bgr_image(event_id: str, bgr, name: str) -> str:
+    """
+    BGR 이미지 저장
+    - name 예: img_cam1 / img_ws1 / img_ds1 / img_ws2 / img_ds2 / img_wheel_ws / ...
+    """
+    if bgr is None:
+        return ""
+
+    base = event_dir(event_id)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = "{0}_{1}.jpg".format(name, ts)
+
+    path = os.path.join(base, filename)
+    try:
+        cv2.imwrite(path, bgr)
+        return path
+    except Exception as e:
+        print("[IMG-SAVE-ERR]", e)
+        return ""
+
+
+# ==================================================
+# 2) OpenCV(BGR) -> QImage 변환 (기존 테스트 코드 호환)
+# ==================================================
+def cvimg_to_qimage(bgr):
+    """
+    OpenCV BGR ndarray -> QImage
+    test/zmq_rtsp_test.py 등에서 사용
+    """
+    if bgr is None:
+        return QImage()
+
+    try:
+        # ✅ 연속 메모리 보장 (ROI/슬라이스에서 깨짐 방지)
+        try:
+            import numpy as np
+            bgr = np.ascontiguousarray(bgr)
+        except Exception:
+            pass
+
+        if len(bgr.shape) == 2:
+            # Grayscale
+            h, w = bgr.shape
+            bytes_per_line = w
+            return QImage(bgr.data, w, h, bytes_per_line, QImage.Format_Grayscale8).copy()
+
+        if len(bgr.shape) == 3:
+            h, w, ch = bgr.shape
+            if ch == 3:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                bytes_per_line = ch * w
+                return QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+
+            if ch == 4:
+                rgba = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGBA)
+                bytes_per_line = ch * w
+                return QImage(rgba.data, w, h, bytes_per_line, QImage.Format_RGBA8888).copy()
+
+    except Exception:
+        pass
+
+    return QImage()
+
+
+# ==================================================
+# 3) QLabel 표시 (기존 main/table/button 호환)
+# ==================================================
+def set_label_pixmap_fill(label, pixmap: QPixmap):
+    """
+    QLabel에 pixmap을 비율 유지한 채 표시
+    """
     if label is None or pixmap is None or pixmap.isNull():
         return
 
-    target_size = label.size()
-    if target_size.width() <= 0 or target_size.height() <= 0:
-        label.setPixmap(pixmap.scaled(500, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        label.setAlignment(Qt.AlignCenter)
-        return
-
-    scaled = pixmap.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-
-    if scaled.width() > target_size.width() or scaled.height() > target_size.height():
-        x = max(0, (scaled.width() - target_size.width()) // 2)
-        y = max(0, (scaled.height() - target_size.height()) // 2)
-        rect = QRect(x, y, target_size.width(), target_size.height())
-        scaled = scaled.copy(rect)
-
-    label.setPixmap(scaled)
-    label.setAlignment(Qt.AlignCenter)
-
-# ─────────────────────────────────────────
-# 경로 / 저장 유틸
-# ─────────────────────────────────────────
-def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-    return path
-
-def ws_car1_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "car1", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-def ws_leak1_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "WS_leak1", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-def ds_leak1_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "DS_leak1", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-def ws_leak2_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "WS_leak2", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-def ds_leak2_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "DS_leak2", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-
-
-def ws_wheel1_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "WS_wheel1", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-def ds_wheel1_path(dt: datetime, car_no: str):
-    date_str = dt.strftime("%Y%m%d")
-    time_str = dt.strftime("%H%M%S")
-    folder = os.path.join(DATA_ROOT, "DS_wheel1", date_str)
-    ensure_dir(folder)
-    return os.path.join(folder, f"{car_no}_{time_str}.jpg")
-
-
-
-def save_bgr_image_to_file(bgr, out_path: str) -> bool:
-    if bgr is None:
-        return False
-
-    dirpath = os.path.dirname(out_path)
-    if dirpath:
-        ensure_dir(dirpath)
-
     try:
-        ok = cv2.imwrite(out_path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        return bool(ok)
-    except Exception:
-        return False
+        w = label.width()
+        h = label.height()
+        if w <= 0 or h <= 0:
+            return
 
+        pm = pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.setPixmap(pm)
+        label.setAlignment(Qt.AlignCenter)
+    except Exception:
+        pass

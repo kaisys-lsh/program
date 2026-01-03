@@ -2,7 +2,6 @@
 # -*- coding:utf-8 -*-
 import sys
 import os
-import json
 
 import pymysql
 from datetime import datetime
@@ -11,11 +10,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QListWidgetItem, QMessageBox,
     QToolBar, QLineEdit, QPushButton, QWidgetAction
 )
-    # PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtCore import Qt
 
-from utils.thresholds_utils import load_thresholds_from_json, save_thresholds_to_json
+from utils.color_json_utils import load_thresholds_from_json, save_thresholds_to_json
 
 # 작업 디렉토리 고정
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -31,9 +29,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_PATH = os.path.join(BASE_DIR, "ui", "window_check.ui")
 
 
-# ─────────────────────────────────────
-# 메인 윈도우
-# ─────────────────────────────────────
 class WindowClass(QMainWindow):
     def __init__(self, car_no: str = ""):
         super().__init__()
@@ -46,15 +41,13 @@ class WindowClass(QMainWindow):
                 w.setAlignment(Qt.AlignCenter)
                 w.setScaledContents(True)
 
-        # 임계값 로드 (HMI와 동일한 JSON 사용)
+        # 임계값 로드 (HMI와 동일 JSON)
         self.thresholds = load_thresholds_from_json()
         self.v_strong = float(self.thresholds.get("strong", 5.0))
         self.v_mid    = float(self.thresholds.get("mid", 4.0))
         self.v_weak   = float(self.thresholds.get("weak", 3.0))
         self.v_min    = float(self.thresholds.get("min", 0.0))
 
-
-        # UI에 임계값 표시용 lineEdit 있으면 채워줌
         if hasattr(self, "lineEdit_2"):
             self.lineEdit_2.setText(str(self.v_strong))
         if hasattr(self, "lineEdit_3"):
@@ -76,11 +69,10 @@ class WindowClass(QMainWindow):
         self._connect_db()
 
         # 초기 로드:
-        # - car_no != 'none' : 오늘 날짜 기준 필터
-        # - car_no == 'none' : 날짜 무시, 전체 none 조회
         if self.car_no != "none":
             default_date = datetime.now().strftime("%Y%m%d")
             self.le_date.setText(default_date)
+
         self._reload_from_date()
 
     # ─────────────────────────────────────
@@ -91,13 +83,11 @@ class WindowClass(QMainWindow):
         self.addToolBar(Qt.TopToolBarArea, tb)
         tb.setMovable(False)
 
-        # YYYYMMDD 입력
         self.le_date = QLineEdit(self)
         self.le_date.setMaxLength(8)
         self.le_date.setPlaceholderText("YYYYMMDD")
         self.le_date.setStyleSheet("background:white; color:black;")
 
-        # 불러오기 버튼
         self.btn_load = QPushButton("불러오기", self)
         self.btn_load.setStyleSheet("background:white; color:black;")
         self.btn_load.clicked.connect(self._reload_from_date)
@@ -114,7 +104,6 @@ class WindowClass(QMainWindow):
         if hasattr(self, "listWidget"):
             self.listWidget.itemClicked.connect(self._on_item_clicked)
 
-        # 임계값 저장 버튼이 있다면 이벤트 연결 (예: pushButton_2)
         if hasattr(self, "pushButton_2"):
             self.pushButton_2.clicked.connect(self._on_threshold_save_clicked)
 
@@ -122,7 +111,7 @@ class WindowClass(QMainWindow):
         try:
             if self.conn:
                 self.conn.close()
-        except:
+        except Exception:
             pass
         e.accept()
 
@@ -137,16 +126,13 @@ class WindowClass(QMainWindow):
                 password=DB_PASSWORD,
                 database=DB_NAME,
                 charset="utf8mb4",
-                autocommit=False,
+                autocommit=True,
             )
         except Exception as e:
             QMessageBox.critical(self, "DB 연결 실패", f"DB({DB_NAME}) 연결 실패\n\n{e}")
             self.conn = None
 
     def _reload_from_date(self):
-        """툴바 날짜 + car_no 조건으로 리스트 다시 채움.
-           car_no == 'none' 인 경우 날짜는 무시하고 전체 none 데이터 조회.
-        """
         if not self.conn:
             return
 
@@ -154,12 +140,10 @@ class WindowClass(QMainWindow):
             QMessageBox.information(self, "안내", "대차번호가 없습니다.")
             return
 
-        # none 인 경우: 날짜 상관없이 전부 조회
         if self.car_no == "none":
             self._load_list(date_filter=None)
             return
 
-        # 일반 번호: YYYYMMDD 검증
         date_str = self.le_date.text().strip()
         if not (len(date_str) == 8 and date_str.isdigit()):
             QMessageBox.information(self, "안내", "날짜는 YYYYMMDD(8자리 숫자)로 입력하세요.")
@@ -168,7 +152,6 @@ class WindowClass(QMainWindow):
         self._load_list(date_filter=date_str)
 
     def _load_list(self, date_filter: str = None):
-        """posco.data 에서 car_no + (옵션) 날짜로 레코드 조회 후 listWidget 채움."""
         if not self.conn:
             return
 
@@ -176,7 +159,6 @@ class WindowClass(QMainWindow):
 
         with self.conn.cursor() as cur:
             if car_no == "none":
-                # car_no='none' 인 전체 레코드
                 sql = f"""
                     SELECT id, ts, car_no,
                            ws1_db, ds1_db, ws2_db, ds2_db,
@@ -190,8 +172,6 @@ class WindowClass(QMainWindow):
                 """
                 cur.execute(sql, (car_no,))
             else:
-                # 특정 날짜 + car_no = 3자리 번호
-                # DATE(ts) = 'YYYY-MM-DD'
                 y, m, d = date_filter[0:4], date_filter[4:6], date_filter[6:8]
                 date_sql = f"{y}-{m}-{d}"
                 sql = f"""
@@ -219,26 +199,31 @@ class WindowClass(QMainWindow):
             if car_no == "none":
                 QMessageBox.information(self, "안내", "car_no='none' 데이터가 없습니다.")
             else:
-                QMessageBox.information(
-                    self,
-                    "안내",
-                    f"{date_filter} / {car_no} 데이터가 없습니다.",
-                )
+                QMessageBox.information(self, "안내", f"{date_filter} / {car_no} 데이터가 없습니다.")
             return
 
-        # 리스트: 대차 이미지 경로 기준으로 표시
+        # ✅ 리스트를 "id 기반"으로 만든다 (경로 중복/빈값이어도 안전)
         for r in self._rows_cache:
-            # 인덱스 매핑:
-            #  0:id, 1:ts, 2:car_no,
-            #  3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
-            #  7:img_car_path, 8:img_ws1_path, 9:img_ds1_path, 10:img_ws2_path, 11:img_ds2_path,
-            # 12:ws_wheel1_status, 13:ws_wheel2_status,
-            # 14:ds_wheel1_status, 15:ds_wheel2_status,
-            # 16:img_ws_wheel_path, 17:img_ds_wheel_path
-            car_img = r[7] or ""
-            text = car_img if car_img else "(대차이미지 없음)"
+            _id = r[0]
+            ts_val = r[1]
+            cno = str(r[2] or "")
+
+            ws1_db = float(r[3] or 0.0)
+            ds1_db = float(r[4] or 0.0)
+            ws2_db = float(r[5] or 0.0)
+            ds2_db = float(r[6] or 0.0)
+
+            try:
+                ts_str = ts_val.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_val, "strftime") else str(ts_val)
+            except Exception:
+                ts_str = str(ts_val)
+
+            text = f"[{_id}] {ts_str}  car:{cno}  ws1:{ws1_db:.2f} ds1:{ds1_db:.2f} ws2:{ws2_db:.2f} ds2:{ds2_db:.2f}"
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, _id)   # ✅ 클릭 시 이 id로 row 찾음
+
             if hasattr(self, "listWidget"):
-                self.listWidget.addItem(QListWidgetItem(text))
+                self.listWidget.addItem(it)
 
         # 첫 항목 자동 선택
         if hasattr(self, "listWidget") and self.listWidget.count() > 0:
@@ -251,31 +236,31 @@ class WindowClass(QMainWindow):
     def _color_for_db(self, dbv: float):
         try:
             v = float(dbv)
-        except:
+        except Exception:
             v = 0.0
 
         if v >= self.v_strong:
-            return QColor(255, 30, 0)   # 빨강 strong
+            return QColor(255, 30, 0)   # 빨강
         elif v >= self.v_mid:
-            return QColor(255, 255, 0)  # 노랑 mid
+            return QColor(255, 255, 0)  # 노랑
         elif v >= self.v_weak:
-            return QColor(0, 170, 255)  # 파랑 weak
+            return QColor(0, 170, 255)  # 파랑
         else:
-            return QColor(30, 255, 30)  # 초록 low
+            return QColor(30, 255, 30)  # 초록
 
     def _set_db_label(self, label_name: str, value: float):
         if not hasattr(self, label_name):
             return
         w = getattr(self, label_name)
+
         try:
             v = float(value)
-        except:
+        except Exception:
             v = 0.0
 
         w.setText(f"{v:.1f}")
 
         c = self._color_for_db(v)
-        # strong(빨강)인 경우 글씨 흰색, 나머지는 검정
         font_color = "white" if c == QColor(255, 30, 0) else "black"
         w.setStyleSheet(f"background-color: {c.name()}; color: {font_color};")
 
@@ -283,6 +268,7 @@ class WindowClass(QMainWindow):
         if not hasattr(self, label_name):
             return
         wgt = getattr(self, label_name)
+
         if img_path and os.path.exists(img_path):
             pix = QPixmap(img_path)
             scaled = pix.scaled(wgt.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
@@ -291,29 +277,20 @@ class WindowClass(QMainWindow):
             wgt.clear()
 
     # ─────────────────────────────────────
-    # 리스트 항목 클릭 처리
+    # 리스트 클릭 처리
     # ─────────────────────────────────────
     def _on_item_clicked(self, item: QListWidgetItem):
         if not self._rows_cache:
             return
 
-        # item.text() == car 이미지 경로로 찾기
-        car_img_path = item.text()
+        target_id = item.data(Qt.UserRole)
         row = None
         for r in self._rows_cache:
-            if (r[7] or "") == car_img_path:
+            if r[0] == target_id:
                 row = r
                 break
         if row is None:
             row = self._rows_cache[0]
-
-        # 인덱스 매핑 재확인:
-        #  0:id, 1:ts, 2:car_no,
-        #  3:ws1_db, 4:ds1_db, 5:ws2_db, 6:ds2_db,
-        #  7:img_car_path, 8:img_ws1_path, 9:img_ds1_path, 10:img_ws2_path, 11:img_ds2_path,
-        # 12:ws_wheel1_status, 13:ws_wheel2_status,
-        # 14:ds_wheel1_status, 15:ds_wheel2_status,
-        # 16:img_ws_wheel_path, 17:img_ds_wheel_path
 
         ts_val = row[1]
         car_no = str(row[2] or "")
@@ -322,9 +299,7 @@ class WindowClass(QMainWindow):
             if hasattr(ts_val, "strftime"):
                 date_str = ts_val.strftime("%Y%m%d")
             else:
-                # 문자열이면 'YYYY-MM-DD HH:MM:SS' → 앞부분만
                 s = str(ts_val)
-                # 'YYYY-MM-DD' 부분을 추출
                 date_str = s[:10].replace("-", "")
         except Exception:
             date_str = ""
@@ -347,30 +322,25 @@ class WindowClass(QMainWindow):
         img_ws_wheel = row[16] or ""
         img_ds_wheel = row[17] or ""
 
-        # 라벨에 기본 값 표시
         if hasattr(self, "time_label"):
             self.time_label.setText(date_str)
         if hasattr(self, "num_label"):
             self.num_label.setText(car_no)
 
-        # dB 라벨 (ws1, ds1, ws2, ds2) + 색상
-        self._set_db_label("dB_label1", ws1_db)  # ws1
-        self._set_db_label("dB_label2", ds1_db)  # ds1
-        self._set_db_label("dB_label3", ws2_db)  # ws2
-        self._set_db_label("dB_label4", ds2_db)  # ds2
+        self._set_db_label("dB_label1", ws1_db)
+        self._set_db_label("dB_label2", ds1_db)
+        self._set_db_label("dB_label3", ws2_db)
+        self._set_db_label("dB_label4", ds2_db)
 
-        # 이미지 표시 (image_1~5 = 대차, ws1, ds1, ws2, ds2)
         self._show_image_to_label("image_1", img_car)
         self._show_image_to_label("image_2", img_ws1)
         self._show_image_to_label("image_3", img_ds1)
         self._show_image_to_label("image_4", img_ws2)
         self._show_image_to_label("image_5", img_ds2)
 
-        # 🔹 휠 이미지 표시
-        self._show_image_to_label("image_6", img_ws_wheel)  # WS 휠 이미지
-        self._show_image_to_label("image_7", img_ds_wheel)  # DS 휠 이미지
+        self._show_image_to_label("image_6", img_ws_wheel)
+        self._show_image_to_label("image_7", img_ds_wheel)
 
-        # 🔹 휠 상태 텍스트 표시
         if hasattr(self, "wheel_label1"):
             self.wheel_label1.setText(str(ws_wheel1_status))
         if hasattr(self, "wheel_label4"):
@@ -381,10 +351,9 @@ class WindowClass(QMainWindow):
             self.wheel_label3.setText(str(ds_wheel2_status))
 
     # ─────────────────────────────────────
-    # 임계값 버튼 클릭 시 (선택사항)
+    # 임계값 저장
     # ─────────────────────────────────────
     def _on_threshold_save_clicked(self):
-        """뷰어에서 임계값을 수정하고 저장할 때(있으면)."""
         def _safe_float(le_name, default):
             if not hasattr(self, le_name):
                 return default
@@ -410,23 +379,17 @@ class WindowClass(QMainWindow):
 
         save_thresholds_to_json(self.thresholds)
 
-        # 현재 표시중인 항목에 대해서만 색 재적용 (필요하면 전체 리스트 재선택)
-        current_item = None
+        # 현재 선택 항목 다시 적용
         if hasattr(self, "listWidget"):
-            current_item = self.listWidget.currentItem()
-        if current_item is not None:
-            self._on_item_clicked(current_item)
+            it = self.listWidget.currentItem()
+            if it is not None:
+                self._on_item_clicked(it)
 
 
-# ─────────────────────────────────────
-# 엔트리 포인트
-# ─────────────────────────────────────
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # 실행 인자: 대차번호 (예: 203 또는 none)
     car_no_arg = sys.argv[1] if len(sys.argv) > 1 else ""
-    #car_no_arg = "203"
     if not car_no_arg:
         sys.exit(0)
 
