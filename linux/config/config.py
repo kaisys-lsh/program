@@ -2,14 +2,14 @@
 
 import torch
 
-IMAGE_DIR     = "/home/kaisys/Project/image"
+IMAGE_DIR     = "User/user/Projects/data/image"
 FPS           = 0.8
 JPEG_QUALITY  = 80
 
 TEST_IMAGE_MODE = True
 
-CFG_PATH      = "/home/kaisys/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
-WEIGHTS_PATH  = "/home/kaisys/Project/대차인식WS_V1.pth"
+CFG_PATH      = "User/user/detectron2/projects/PointRend/configs/InstanceSegmentation/pointrend_rcnn_R_50_FPN_3x_coco.yaml"
+WEIGHTS_PATH  = "User/user/Project/대차인식WS_V1.pth"
 
 PUSH_BIND     = "tcp://*:5577"
 EMPTY_CODE_OK = True

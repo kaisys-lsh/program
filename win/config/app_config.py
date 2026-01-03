@@ -2,7 +2,7 @@
 import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UI_PATH = os.path.join(BASE_DIR, "ui", "window_hmi.ui")
+UI_PATH = os.path.join(BASE_DIR, "ui", "test_hmi.ui")
 
 # 개발/테스트 옵션
 USE_DUMMY_CRY = True
