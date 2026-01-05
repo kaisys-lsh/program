@@ -4958,9 +4958,9 @@ background-color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="msg_4">
     <property name="geometry">
      <rect>
-      <x>440</x>
-      <y>660</y>
-      <width>120</width>
+      <x>960</x>
+      <y>630</y>
+      <width>91</width>
       <height>41</height>
      </rect>
     </property>
@@ -5120,9 +5120,9 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="msg_6">
     <property name="geometry">
      <rect>
-      <x>960</x>
-      <y>629</y>
-      <width>91</width>
+      <x>440</x>
+      <y>660</y>
+      <width>121</width>
       <height>41</height>
      </rect>
     </property>
@@ -5201,7 +5201,7 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="msg_7">
     <property name="geometry">
      <rect>
-      <x>700</x>
+      <x>570</x>
       <y>660</y>
       <width>120</width>
       <height>41</height>
@@ -5263,7 +5263,7 @@ color: rgb(255, 255, 255);</string>
    <widget class="QLabel" name="msg_8">
     <property name="geometry">
      <rect>
-      <x>570</x>
+      <x>700</x>
       <y>660</y>
       <width>120</width>
       <height>41</height>
