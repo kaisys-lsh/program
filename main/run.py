@@ -60,7 +60,7 @@ CRY_CONFIGS = {
 }
 
 # =========================================================
-#  🧵 스레드 (DB, RTSP, ZMQ) - 기존과 동일
+#  🧵 스레드 (DB, RTSP, ZMQ)
 # =========================================================
 class DbWorker(QThread):
     def __init__(self):
@@ -76,7 +76,6 @@ class DbWorker(QThread):
             cur = conn.cursor()
             cur.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME}")
             conn.select_db(DB_NAME)
-            # 테이블 구조 (휠 상태 8개 컬럼)
             sql = f"""
                 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -213,18 +212,14 @@ class MainWindow(QMainWindow):
         ui_path = os.path.join(os.path.dirname(__file__), "window_hmi.ui")
         loadUi(ui_path, self)
 
-        # ------------------------------------------------
         # 1. 자료구조 초기화
-        # ------------------------------------------------
-        self.car_queue = deque()         # 처리 중인 대차 (7칸 딜레이용)
-        self.history_queue = deque(maxlen=172) # 완료된 대차 (버튼 표시용, 최대 172개)
+        self.car_queue = deque()         
+        self.history_queue = deque(maxlen=172) 
 
-        # 테이블 위젯 초기화 (헤더 설정)
+        # 테이블 위젯 초기화
         self.init_table_widget()
 
-        # ------------------------------------------------
         # 2. 스레드 시작
-        # ------------------------------------------------
         self.recorders = {}
         for name, url in RTSP_URLS.items():
             t = RtspRecorder(name, url)
@@ -246,16 +241,11 @@ class MainWindow(QMainWindow):
         self.db_worker.start()
 
     def init_table_widget(self):
-        # 테이블 컬럼: 대차번호, WS1, DS1, WS2, DS2, 휠WS, 휠DS
         cols = ["대차번호", "WS1", "DS1", "WS2", "DS2", "휠 WS", "휠 DS"]
         self.tableWidget.setColumnCount(len(cols))
         self.tableWidget.setHorizontalHeaderLabels(cols)
-        # 컬럼 너비 꽉 채우기 (선택사항)
         self.tableWidget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-    # -----------------------------------------------------
-    # [Helper] 상태값 변환 및 요약
-    # -----------------------------------------------------
     def get_rotation_text(self, val):
         if val == 1: return "회전"
         elif val == 2: return "무회전"
@@ -278,9 +268,6 @@ class MainWindow(QMainWindow):
         target = self.car_queue[-1] if "1" in name else (self.car_queue[0] if len(self.car_queue) > 0 else None)
         if target: target["sensor_data"][name] = val
 
-    # -----------------------------------------------------
-    # [로직] ZMQ 처리
-    # -----------------------------------------------------
     def process_zmq(self, data):
         msg_type = data.get("type")
         event_id = data.get("event_id")
@@ -291,8 +278,8 @@ class MainWindow(QMainWindow):
                 "event_id": event_id,
                 "car_no": None,
                 "sensor_data": {},
-                "wheel_status": {}, # 여기에 raw값(0,1,2)도 저장하면 좋음, 지금은 텍스트로 저장 중
-                "wheel_raw": {},    # 0,1,2 원본 저장용 (버튼 로직 위해 추가)
+                "wheel_status": {}, 
+                "wheel_raw": {},    
                 "images": {},
             }
             for cam in ["car", "wheel_ws", "wheel_ds", "waek_ws1", "waek_ds1"]:
@@ -315,15 +302,12 @@ class MainWindow(QMainWindow):
                     pos, src = data.get("pos", "").lower(), data.get("src", "").lower()
                     r, p = data.get("wheel1_rotation", 0), data.get("wheel1_position", 0)
                     
-                    # 텍스트 저장
                     target_car["wheel_status"][f"{pos}_{src}_r"] = self.get_rotation_text(r)
                     target_car["wheel_status"][f"{pos}_{src}_p"] = self.get_position_text(p)
-                    # 원본(0,1,2) 저장 (로직 판별용)
                     target_car["wheel_raw"][f"{pos}_{src}_r"] = r
                     target_car["wheel_raw"][f"{pos}_{src}_p"] = p
 
     def check_queue_pop(self):
-        """팝 시점: 2번구간 저장 -> DB저장 -> UI(테이블/버튼) 갱신"""
         if len(self.car_queue) > DELAY_COUNT:
             finished_car = self.car_queue.popleft()
             
@@ -332,30 +316,23 @@ class MainWindow(QMainWindow):
                 finished_car["images"][cam] = self.trigger_save_and_get_path(cam, ts_str)
 
             QThread.msleep(100)
-            
-            # [UI 갱신]
             self.update_hmi_display(finished_car)
-            
-            # [DB 저장]
             self.db_worker.add_task(finished_car)
 
-    # -----------------------------------------------------
-    # [핵심] HMI 화면 업데이트 (테이블 + 버튼 시프트)
-    # -----------------------------------------------------
     def update_hmi_display(self, data):
-        # 1. 기본 라벨/이미지 업데이트 (기존 코드)
+        # 1. 라벨/이미지 업데이트 (복구 완료!)
         self.update_labels_and_images(data)
 
-        # 2. 테이블 위젯에 행 추가 (맨 위에 삽입)
+        # 2. 테이블 위젯에 행 추가
         self.add_row_to_table(data)
 
-        # 3. 버튼 리스트 업데이트 (시프트 레지스터)
-        # 새 데이터를 히스토리 큐의 '왼쪽(앞)'에 넣습니다. (N_1이 최신이므로)
-        self.history_queue.appendleft(data) # appendleft: 최신이 0번 인덱스
+        # 3. 버튼 리스트 업데이트
+        self.history_queue.appendleft(data)
         self.update_buttons()
 
+    # ★★★ 여기가 복구된 함수입니다 ★★★
     def update_labels_and_images(self, data):
-        # (기존 update_hmi_display 내용)
+        # --- [이미지 갱신] ---
         imgs = data.get('images', {})
         self.show_img("image_1", imgs.get("car"))
         self.show_img("image_2", imgs.get("waek_ws1"))
@@ -365,9 +342,38 @@ class MainWindow(QMainWindow):
         self.show_img("image_6", imgs.get("wheel_ws"))
         self.show_img("image_7", imgs.get("wheel_ds"))
         
-        # 텍스트 라벨 (생략 가능하나 유지)
-        if hasattr(self, "msg_1"): getattr(self, "msg_1").setText(str(data.get("car_no")))
-        # ... (나머지 라벨 업데이트 코드는 위와 동일하므로 생략)
+        # --- [텍스트 라벨 갱신 (msg_1 ~ msg_9)] ---
+        sens = data.get('sensor_data', {})
+        wheels = data.get('wheel_status', {})
+
+        # 헬퍼 함수
+        def set_txt(label_name, txt):
+            if hasattr(self, label_name):
+                getattr(self, label_name).setText(str(txt))
+
+        # msg_1: 대차번호 (없으면 -)
+        c_no = data.get("car_no")
+        set_txt("msg_1", c_no if c_no else "-")
+
+        # msg_2 ~ 5: 누풍 데시벨
+        set_txt("msg_2", f"{sens.get('waek_ws1', 0):.2f}")
+        set_txt("msg_3", f"{sens.get('waek_ds1', 0):.2f}")
+        set_txt("msg_4", f"{sens.get('waek_ws2', 0):.2f}")
+        set_txt("msg_5", f"{sens.get('waek_ds2', 0):.2f}")
+
+        # msg_6 ~ 9: 휠 상태 (회전R / 위치P)
+        def fmt_wheel(pos, src):
+            r = wheels.get(f"{pos}_{src}_r")
+            p = wheels.get(f"{pos}_{src}_p")
+            
+            r_txt = r if r else "-"
+            p_txt = p if p else "-"
+            return f"{r_txt} / {p_txt}"
+
+        set_txt("msg_6", fmt_wheel("ws", "1st")) 
+        set_txt("msg_7", fmt_wheel("ws", "2nd")) 
+        set_txt("msg_8", fmt_wheel("ds", "1st")) 
+        set_txt("msg_9", fmt_wheel("ds", "2nd")) 
 
     def show_img(self, label_name, path):
         if not hasattr(self, label_name): return
@@ -379,10 +385,7 @@ class MainWindow(QMainWindow):
             label.setText("No Image")
 
     def add_row_to_table(self, data):
-        """테이블 위젯 맨 윗줄에 데이터 삽입"""
-        self.tableWidget.insertRow(0) # 맨 위에 빈 행 추가
-
-        # 데이터 준비
+        self.tableWidget.insertRow(0)
         c_no = str(data.get("car_no") if data.get("car_no") else "-")
         sens = data.get("sensor_data", {})
         ws1 = f"{sens.get('waek_ws1', 0):.2f}"
@@ -390,11 +393,9 @@ class MainWindow(QMainWindow):
         ws2 = f"{sens.get('waek_ws2', 0):.2f}"
         ds2 = f"{sens.get('waek_ds2', 0):.2f}"
 
-        # 휠 상태 요약 (WS, DS)
         wheel_ws_txt = self.summarize_wheel_side(data, "ws")
         wheel_ds_txt = self.summarize_wheel_side(data, "ds")
 
-        # 셀에 값 넣기
         items = [c_no, ws1, ds1, ws2, ds2, wheel_ws_txt, wheel_ds_txt]
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
@@ -402,52 +403,40 @@ class MainWindow(QMainWindow):
             self.tableWidget.setItem(0, col, item)
 
     def summarize_wheel_side(self, data, pos):
-        """테이블용 휠 상태 요약 (1st, 2nd 통합)"""
         raw = data.get("wheel_raw", {})
-        # pos=ws 일 때: ws_1st_r, ws_1st_p, ws_2nd_r, ws_2nd_p 체크
-        # 하나라도 2면 비정상, 하나라도 0이면 감지X, 아니면 정상
         vals = []
         for src in ["1st", "2nd"]:
             vals.append(raw.get(f"{pos}_{src}_r", 0))
             vals.append(raw.get(f"{pos}_{src}_p", 0))
-        
         if 2 in vals: return "비정상"
         if 0 in vals: return "감지X"
         return "정상"
 
     def update_buttons(self):
-        """history_queue에 있는 데이터를 N_1 ~ N_172 버튼에 매핑"""
-        # history_queue[0] -> N_1 (최신)
-        # history_queue[1] -> N_2
         for i, car_data in enumerate(self.history_queue):
             btn_num = i + 1
-            if btn_num > 172: break # 버튼 개수 초과 시 중단
+            if btn_num > 172: break
             
             btn_name = f"N_{btn_num}"
             if not hasattr(self, btn_name): continue
             
             btn = getattr(self, btn_name)
             
-            # --- [색상 로직] ---
-            # 1. 위쪽 색상 (누풍)
+            # 1. 위쪽 색상
             sens = car_data.get("sensor_data", {})
-            # 4개 센서 중 가장 높은 값 기준
             max_db = max(
                 sens.get('waek_ws1', 0), sens.get('waek_ds1', 0),
                 sens.get('waek_ws2', 0), sens.get('waek_ds2', 0)
             )
-            
             top_color = "white"
             if max_db > 70: top_color = "red"
             elif max_db > 60: top_color = "yellow"
-            elif max_db > 50: top_color = "#00BFFF" # Deep Sky Blue (파랑 계열)
+            elif max_db > 50: top_color = "#00BFFF" 
             
-            # 2. 아래쪽 색상 (휠 전체 통합)
+            # 2. 아래쪽 색상
             raw = car_data.get("wheel_raw", {})
-            # 모든 휠(ws/ds, 1st/2nd, r/p) 값 수집 -> 총 8개 값
             all_vals = list(raw.values())
             
-            # 기본값은 감지X(0)로 가정 (데이터가 아예 없으면 감지X 처리)
             if not all_vals: 
                 bottom_status = "감지X"
                 bottom_color = "yellow"
@@ -462,8 +451,6 @@ class MainWindow(QMainWindow):
                     bottom_status = "정상"
                     bottom_color = "white"
 
-            # --- [스타일 적용: 반반 치킨 Gradient] ---
-            # stop: 0.5에서 색이 딱 끊기게 설정
             style = f"""
                 QPushButton {{
                     background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, 
@@ -476,11 +463,8 @@ class MainWindow(QMainWindow):
             """
             btn.setStyleSheet(style)
             
-            # --- [텍스트 설정] ---
             c_no = car_data.get("car_no", "-")
             if c_no is None: c_no = "-"
-            
-            # 줄바꿈으로 위아래 텍스트 구분
             btn.setText(f"{c_no}\n{bottom_status}")
 
     def closeEvent(self, event):
