@@ -41,10 +41,10 @@ TABLE_NAME = "data"
 
 # [저장 경로 설정]
 SAVE_ROOT_DIR = r"D:/data"
-DELAY_COUNT = 4 
+DELAY_COUNT = 6 
 
 # [카메라 설정]
-RTSP_DUMMY = r"D:/GitHub/program/output.avi" # 테스트용 더미 파일 경로 확인 필요
+RTSP_DUMMY = r"D:\GitHub\program\output.avi" # 테스트용 더미 파일 경로 확인 필요
 RTSP_URLS = {
     "car":      RTSP_DUMMY,
     "wheel_ws": RTSP_DUMMY,
@@ -137,9 +137,6 @@ class DbWorker(QThread):
             raw = d.get('wheel_raw', {})  # 원본 숫자값 (필요시 사용, 여기서는 status 사용)
             i = d.get('images', {})
 
-            # 휠 상태값이 텍스트가 아닌 경우를 대비해 기본 처리 (DB에는 raw값 대신 status 텍스트 저장 가정)
-            # 만약 DB에 숫자를 넣고 싶으면 w 대신 raw 사용
-            
             val = (
                 d.get('car_no'),
                 s.get('waek_ws1', 0), s.get('waek_ds1', 0), s.get('waek_ws2', 0), s.get('waek_ds2', 0),
@@ -167,25 +164,46 @@ class RtspRecorder(QThread):
         self.rtsp_url = rtsp_url
         self.running = True
         self.save_filename = None
+        
+        # [현장용 팁] OpenCV가 RTSP를 TCP로 받도록 강제 (UDP보다 끊김이 덜함)
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
         if not os.path.exists(SAVE_ROOT_DIR):
             try: os.makedirs(SAVE_ROOT_DIR)
             except: pass
 
     def run(self):
         cap = cv2.VideoCapture(self.rtsp_url)
+        fail_count = 0  # 실패 횟수 카운트
+
         while self.running:
+            # 1. 연결이 끊겨있으면 재접속 시도
             if not cap.isOpened():
-                time.sleep(1)
+                time.sleep(1) # 1초 대기 후 재시도
                 cap.open(self.rtsp_url)
+                print(f"[{self.cam_name}] 재접속 시도...")
                 continue
+            
+            # 2. 프레임 읽기
             ret, frame = cap.read()
+            
             if ret:
+                fail_count = 0  # 성공하면 카운트 초기화
                 if self.save_filename:
                     self.save_image(frame, self.save_filename)
                     self.save_filename = None
             else:
-                time.sleep(0.1)
+                # 3. 읽기 실패 시 처리
+                fail_count += 1
+
+                if fail_count > 100:
+                    print(f"[{self.cam_name}] 연결 불안정 -> 재접속을 위해 연결 해제")
+                    cap.release() 
+                
+                time.sleep(0.01)
+            
             time.sleep(0.005)
+        
         cap.release()
 
     def request_save(self, file_name):
@@ -198,7 +216,9 @@ class RtspRecorder(QThread):
             path = os.path.join(SAVE_ROOT_DIR, self.cam_name, date_str)
             os.makedirs(path, exist_ok=True)
             cv2.imwrite(os.path.join(path, file_name), frame)
-        except: pass
+            # print(f"[{self.cam_name}] 이미지 저장 완료: {file_name}")
+        except Exception as e:
+            print(f"이미지 저장 실패: {e}")
 
     def stop(self):
         self.running = False
@@ -213,6 +233,7 @@ class ZmqReceiver(QThread):
     def run(self):
         ctx = zmq.Context()
         sock = ctx.socket(zmq.PULL)
+        # [주의] Linux 서버 IP에 맞춰 설정 필요
         sock.connect("tcp://192.168.0.103:5577")
         #sock.connect("tcp://127.0.0.1:5888")
         while self.running:
@@ -229,10 +250,10 @@ class ZmqReceiver(QThread):
 #  🖥️ 메인 윈도우
 # =========================================================
 class MainWindow(QMainWindow):
-    CONFIG_FILE = "config.json" # 설정 파일 이름
-
     def __init__(self):
         super().__init__()
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.CONFIG_FILE = os.path.join(base_dir, "config.json")
         # UI 파일 로드
         ui_path = os.path.join(os.path.dirname(__file__), "window_hmi.ui")
         loadUi(ui_path, self)
@@ -367,17 +388,20 @@ class MainWindow(QMainWindow):
         cols = ["대차번호", "WS1", "DS1", "WS2", "DS2", "휠 WS", "휠 DS"]
         self.tableWidget.setColumnCount(len(cols))
         self.tableWidget.setHorizontalHeaderLabels(cols)
-        self.tableWidget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.tableWidget.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
     def get_rotation_text(self, val):
-        if val == 1: return "회전"
-        elif val == 2: return "무회전"
-        return "감지X"
+        if val == 1: return "R:OK"
+        elif val == 2: return "R:NO"
+        return "NG"
 
     def get_position_text(self, val):
-        if val == 1: return "정상"
-        elif val == 2: return "비정상"
-        return "감지X"
+        if val == 1: return "P:OK"
+        elif val == 2: return "P:NO"
+        return "NG"
 
     def trigger_save_and_get_path(self, cam_name, ts_str):
         if cam_name not in self.recorders: return ""
@@ -390,51 +414,6 @@ class MainWindow(QMainWindow):
         if not self.car_queue: return
         target = self.car_queue[-1] if "1" in name else (self.car_queue[0] if len(self.car_queue) > 0 else None)
         if target: target["sensor_data"][name] = val
-
-    # def process_zmq(self, data):
-    #     msg_type = data.get("type")
-    #     event_id = data.get("event_id")
-    #     print(f"📥 [ZMQ 수신]: {data}")
-
-    #     if msg_type == "car_event" and data.get("event") == "START":
-    #         ts_str = datetime.now().strftime("%H%M%S_%f")[:-3]
-    #         new_car = {
-    #             "event_id": event_id,
-    #             "car_no": None,
-    #             "sensor_data": {},
-    #             "wheel_status": {}, 
-    #             "wheel_raw": {},    
-    #             "images": {},
-    #         }
-    #         for cam in ["car", "wheel_ws", "wheel_ds", "waek_ws1", "waek_ds1"]:
-    #             new_car["images"][cam] = self.trigger_save_and_get_path(cam, ts_str)
-            
-    #         self.car_queue.append(new_car)
-    #         print(f"📊 [큐 상태] 현재개수: {len(self.car_queue)} / 설정값: {DELAY_COUNT}")
-    #         if len(self.car_queue) > DELAY_COUNT:
-    #             print(f"👋 [POP 발생] 큐가 꽉 차서 맨 앞 차량 삭제됨!")
-    #         self.check_queue_pop()
-
-    #     elif msg_type in ["car_no", "wheel_status"]:
-    #         target_car = None
-    #         for car in reversed(self.car_queue):
-    #             if car.get("event_id") == event_id:
-    #                 target_car = car
-    #                 break
-            
-    #         if target_car:
-    #             if msg_type == "car_no":
-    #                 target_car["car_no"] = data.get("car_no")
-    #                 print(f"✅ 매칭 성공! ID: {event_id}")
-    #             elif msg_type == "wheel_status":
-    #                 pos, src = data.get("pos", "").lower(), data.get("src", "").lower()
-    #                 r, p = data.get("wheel1_rotation", 0), data.get("wheel1_position", 0)
-                    
-    #                 target_car["wheel_status"][f"{pos}_{src}_r"] = self.get_rotation_text(r)
-    #                 target_car["wheel_status"][f"{pos}_{src}_p"] = self.get_position_text(p)
-    #                 target_car["wheel_raw"][f"{pos}_{src}_r"] = r
-    #                 target_car["wheel_raw"][f"{pos}_{src}_p"] = p
-    #                 print(f"❌ 매칭 실패 (이미 삭제됨): {event_id} / Type: {msg_type}")
 
     def process_zmq(self, data):
         msg_type = data.get("type")
@@ -469,9 +448,20 @@ class MainWindow(QMainWindow):
                 if msg_type == "car_no":
                     target_car["car_no"] = data.get("car_no")
                     print(f"✅ [CarNo] 매칭 성공: {data.get('car_no')}")
+                
                 elif msg_type == "wheel_status":
-                    pos, src = data.get("pos", "").lower(), data.get("src", "").lower()
-                    r, p = data.get("wheel1_rotation", 0), data.get("wheel1_position", 0)
+                    pos = data.get("pos", "").lower()
+                    src = data.get("src", "").lower()
+                    
+                    # [수정] src에 따라 읽어올 데이터 필드 구분 (1st -> wheel1, 2nd -> wheel2)
+                    if "1st" in src:
+                        r = data.get("wheel1_rotation", 0)
+                        p = data.get("wheel1_position", 0)
+                    elif "2nd" in src:
+                        r = data.get("wheel2_rotation", 0)
+                        p = data.get("wheel2_position", 0)
+                    else:
+                        r, p = 0, 0
                     
                     # 1. 텍스트 저장 (표시용)
                     target_car["wheel_status"][f"{pos}_{src}_r"] = self.get_rotation_text(r)
@@ -481,7 +471,7 @@ class MainWindow(QMainWindow):
                     target_car["wheel_raw"][f"{pos}_{src}_r"] = r
                     target_car["wheel_raw"][f"{pos}_{src}_p"] = p
                     
-                    print(f"✅ [Wheel] 매칭 및 저장 완료: {pos}_{src}")
+                    print(f"✅ [Wheel] 매칭 및 저장 완료: {pos}_{src} (r={r}, p={p})")
             else:
                 pass
                 print(f"❌ 매칭 실패: {event_id} (큐에서 이미 삭제됨)")
@@ -532,7 +522,7 @@ class MainWindow(QMainWindow):
             p = wheels.get(f"{pos}_{src}_p")
             r_txt = r if r else "-"
             p_txt = p if p else "-"
-            return f"{r_txt}/{p_txt}"
+            return f"{r_txt} | {p_txt}"
 
         set_txt("msg_6", fmt_wheel("ws", "1st")) 
         set_txt("msg_7", fmt_wheel("ws", "2nd")) 
@@ -564,26 +554,42 @@ class MainWindow(QMainWindow):
             item.setTextAlignment(Qt.AlignCenter)
             self.tableWidget.setItem(0, col, item)
 
+        if self.tableWidget.rowCount() > 172:
+            self.tableWidget.removeRow(172)
+    
     def summarize_wheel_side(self, data, pos):
-        # [중요] HMI에 표시할 때 'wheel_raw' 값을 기반으로 판단
+        """
+        1st, 2nd 각각의 상태를 판별한 뒤 "1st결과 / 2nd결과" 문자열 반환
+        """
         raw = data.get("wheel_raw", {})
-        vals = []
-
-        for src in ["1st", "2nd"]:
-            # 회전(r)과 위치(p) 둘 중 하나라도 들어왔는지 확인
-            r_val = raw.get(f"{pos}_{src}_r")
-            p_val = raw.get(f"{pos}_{src}_p")
+        
+        # 헬퍼 함수: (회전, 위치) -> 상태 문자열
+        def check_one_wheel(r, p):
+            # 값이 없으면 0으로 처리
+            if r is None: r = 0
+            if p is None: p = 0
             
-            if r_val is not None: vals.append(r_val)
-            if p_val is not None: vals.append(p_val)
+            # 1. 하나라도 비정상(2)이면 -> 비정상
+            if r == 2 or p == 2:
+                return "NO"
+            # 2. 둘 다 정상(1)이면 -> 정상
+            elif r == 1 and p == 1:
+                return "OK"
+            # 3. 그 외(둘 다 0이거나 하나만 1인 등) -> 검출X
+            else:
+                return "NG"
 
-        if not vals:
-            return "감지X"  # 데이터가 하나도 안 들어옴
-        if 2 in vals:
-            return "비정상" # 하나라도 비정상이면
-        if 0 in vals:
-            return "감지X" # (0: 인식실패)가 섞여있으면
-        return "정상" # 나머지는 정상(1)
+        # 1st 휠 판정
+        r1 = raw.get(f"{pos}_1st_r")
+        p1 = raw.get(f"{pos}_1st_p")
+        res1 = check_one_wheel(r1, p1)
+
+        # 2nd 휠 판정
+        r2 = raw.get(f"{pos}_2nd_r")
+        p2 = raw.get(f"{pos}_2nd_p")
+        res2 = check_one_wheel(r2, p2)
+
+        return f"{res1} | {res2}"
 
     def update_buttons(self):
         # 설정값 가져오기
