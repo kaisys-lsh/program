@@ -44,7 +44,7 @@ SAVE_ROOT_DIR = r"D:/data"
 DELAY_COUNT = 6 
 
 # [카메라 설정]
-RTSP_DUMMY = r"D:\GitHub\program\output.avi" # 테스트용 더미 파일 경로 확인 필요
+RTSP_DUMMY = r"D:\GitHub\program\3.avi" # 테스트용 더미 파일 경로 확인 필요
 RTSP_URLS = {
     "car":      RTSP_DUMMY,
     "wheel_ws": RTSP_DUMMY,
