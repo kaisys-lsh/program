@@ -29,7 +29,7 @@ WEIGHTS_PATH        = "/home/kaisys/Project/대차인식WS_V1.pth"
 CONFIG_INI_PATH     = "/home/kaisys/CheckWheelStatusPy/Config.ini"
 
 # 비디오 / RTSP 입력
-RTSP_URL            = "/home/kaisys/Project/program/output.avi"
+RTSP_URL            = "/home/kaisys/Project/raw.avi"
 RECONNECT_WAIT_SEC  = 2.0       # 재연결 대기 시간 (초)
 USE_FFMPEG          = True
 DROP_OLD_FRAMES     = True
@@ -47,7 +47,7 @@ ZMQ_QUEUE_PUT_TIMEOUT_SEC = 0.01
 D2_MIN_SIZE_TEST      = 720
 D2_MAX_SIZE_TEST      = 1280
 D2_NUM_CLASSES        = 11
-D2_SCORE_THRESH_TEST  = 0.8
+D2_SCORE_THRESH_TEST  = 0.7
 
 D2_META_NAME          = "inference_meta_pointrend_numbers"
 D2_MARK_CLASS_NAME    = "mark"
@@ -60,7 +60,8 @@ def get_device():
 # 4. 알고리즘 로직 설정 (상태 머신)
 # ==================================================
 DETECT_INTERVAL_FRAMES = 1
-NO_DIGIT_END_FRAMES    = 5      # 숫자가 사라져도 N프레임 대기 후 종료 (끊김 방지)
+NO_DIGIT_END_FRAMES    = 10      # [수정] 연속 미검출 시 종료
+DIGIT_START_FRAMES     = 10      # [추가] 속 검출 시 시작
 
 ROI_Y_MIN_RATIO        = 0.40   # 관심 영역(ROI) 상단 비율
 ROI_Y_MAX_RATIO        = 0.90   # 관심 영역(ROI) 하단 비율
