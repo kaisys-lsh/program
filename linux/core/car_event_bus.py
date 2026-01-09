@@ -1,6 +1,8 @@
 # linux/core/car_event_bus.py
 # --------------------------------------------------
 # [수정] CarEventBus가 상태 머신(Start/End 판단)을 통합 관리함
+# - 5프레임 연속 검출 시 START
+# - 5프레임 연속 미검출 시 END
 # --------------------------------------------------
 
 import time
@@ -20,8 +22,15 @@ class CarEventBus:
         # [통합] 상태 머신 변수들
         # ------------------------------------------------
         self.in_wagon = False
+        
+        # [추가] 시작 판단용 변수 (연속 검출 카운트)
+        self.digit_on_frames = 0
+        self.start_threshold = int(getattr(config, "DIGIT_START_FRAMES", 5))
+
+        # [수정] 종료 판단용 변수 (연속 미검출 카운트)
         self.no_digit_frames = 0
         self.max_no_digit = int(getattr(config, "NO_DIGIT_END_FRAMES", 5))
+        
         self.session_best_code = "FFF"
         
         # 기존 변수들
@@ -60,20 +69,29 @@ class CarEventBus:
         with self.lock:
             if has_digit:
                 # [숫자 감지됨]
-                self.no_digit_frames = 0
-                
-                # 유효한 코드라면 best_code 갱신
-                if frame_code and frame_code != "FFF":
-                    self.session_best_code = frame_code
+                self.no_digit_frames = 0        # 종료 카운터 리셋
+                self.digit_on_frames += 1       # 시작 카운터 증가
 
-                # 아직 진입 상태가 아니라면 -> START
-                if not self.in_wagon:
-                    self._start_session()
+                # 1) 이미 진입한 상태라면 -> 번호 갱신만 수행
+                if self.in_wagon:
+                    if frame_code and frame_code != "FFF":
+                        self.session_best_code = frame_code
+
+                # 2) 아직 진입 전이라면 -> 연속 프레임 체크 후 START
+                else:
+                    if self.digit_on_frames >= self.start_threshold:
+                        self._start_session()
+                        # START 직후 현재 프레임의 번호도 반영
+                        if frame_code and frame_code != "FFF":
+                            self.session_best_code = frame_code
+
             else:
                 # [숫자 없음]
+                self.digit_on_frames = 0        # 연속 검출 실패 -> 시작 카운터 리셋
+
                 if self.in_wagon:
                     self.no_digit_frames += 1
-                    # 일정 시간 이상 안 보이면 -> END
+                    # 5프레임(설정값) 이상 안 보이면 -> END
                     if self.no_digit_frames >= self.max_no_digit:
                         self._end_session(shm_array)
 
@@ -82,6 +100,7 @@ class CarEventBus:
         self.in_wagon = True
         self.session_best_code = "FFF"
         self.no_digit_frames = 0
+        # self.digit_on_frames는 초기화하지 않음 (update_wagon_status에서 관리)
         
         # 기존 send_start 로직
         if self.current_event_id is not None:
@@ -110,8 +129,6 @@ class CarEventBus:
         # 2. SHM 쓰기
         if shm_array is not None:
             # block=True로 휠 프로그램 동기화 대기
-            # (Bus 스레드 혹은 Main 호출 스레드에서 실행되지만, 
-            #  여기서는 Main 루프의 흐름을 방해하지 않도록 설계됨)
             ok = write_car_number(shm_array, final_code, block=True, timeout_sec=1.0)
             if not ok and self.debug_print:
                 print(f"[BUS-WARN] SHM write timeout for {final_code}")
@@ -120,6 +137,7 @@ class CarEventBus:
         self.in_wagon = False
         self.session_best_code = "FFF"
         self.no_digit_frames = 0
+        self.digit_on_frames = 0    # 시작 카운터도 확실히 초기화
         self.current_event_id = None
 
     def _internal_send_car_no(self, car_no_str):
