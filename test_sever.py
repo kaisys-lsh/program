@@ -3,6 +3,7 @@ import time
 import zmq
 import json
 import uuid
+import random  # [추가] 랜덤 번호 생성을 위해 필요
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QComboBox, QRadioButton, QGroupBox, 
@@ -25,7 +26,7 @@ class ScenarioWorker(QThread):
     def __init__(self, socket, data):
         super().__init__()
         self.sock = socket
-        self.d = data  # UI에서 받아온 설정값들
+        self.d = data  # UI에서 받아온 설정값들 (스레드 시작 시점의 스냅샷)
 
     def _now_ms(self):
         return int(time.time() * 1000)
@@ -117,9 +118,12 @@ class ScenarioWorker(QThread):
 class SenderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("시나리오 수동 전송기 (Test Sender)")
-        self.resize(600, 700)
+        self.setWindowTitle("시나리오 자동/수동 전송기")
+        self.resize(600, 750)
         
+        # 자동 실행 상태 플래그
+        self.is_auto_mode = False
+
         # ZMQ 초기화
         self.ctx = zmq.Context()
         self.sock = self.ctx.socket(zmq.PUSH)
@@ -143,10 +147,14 @@ class SenderWindow(QMainWindow):
 
         # 2. 공통 설정 (대차번호, 정지 플래그)
         grp_common = QGroupBox("1. 기본 정보")
+        
         lay_common = QHBoxLayout(grp_common)
         
-        lay_common.addWidget(QLabel("대차 번호:"))
-        self.edt_car_no = QLineEdit("123")
+        lay_common.addWidget(QLabel("대차 번호(자동생성):"))
+        self.edt_car_no = QLineEdit()
+        self.edt_car_no.setPlaceholderText("랜덤생성됨")
+        self.edt_car_no.setReadOnly(True) # 사용자가 직접 수정하지 못하게 (랜덤 전용)
+        self.edt_car_no.setStyleSheet("background-color: #f0f0f0;")
         lay_common.addWidget(self.edt_car_no)
 
         lay_common.addSpacing(20)
@@ -222,12 +230,24 @@ class SenderWindow(QMainWindow):
 
         layout.addWidget(grp_2nd)
 
-        # 4. 전송 버튼
-        self.btn_send = QPushButton("▶ 시나리오 시작 (5초 소요)")
+        # 4. 전송 버튼 영역
+        lay_btn = QHBoxLayout()
+        
+        # [수동 버튼]
+        self.btn_send = QPushButton("▶ 수동 1회 시작")
         self.btn_send.setFixedHeight(50)
-        self.btn_send.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #4CAF50; color: white;")
-        self.btn_send.clicked.connect(self.start_scenario)
-        layout.addWidget(self.btn_send)
+        self.btn_send.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #2196F3; color: white;")
+        self.btn_send.clicked.connect(self.start_scenario_manual)
+        lay_btn.addWidget(self.btn_send)
+
+        # [자동 버튼]
+        self.btn_auto = QPushButton("🔄 자동 반복 시작")
+        self.btn_auto.setFixedHeight(50)
+        self.btn_auto.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #4CAF50; color: white;")
+        self.btn_auto.clicked.connect(self.toggle_auto_mode)
+        lay_btn.addWidget(self.btn_auto)
+
+        layout.addLayout(lay_btn)
 
         # 5. 로그창
         self.log_view = QTextEdit()
@@ -236,14 +256,43 @@ class SenderWindow(QMainWindow):
 
     def log(self, msg):
         self.log_view.append(msg)
-        # 스크롤 최하단으로
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    # ==========================================================
+    # 로직 관련 함수들
+    # ==========================================================
+
+    def start_scenario_manual(self):
+        """수동 버튼 클릭 시"""
+        self.is_auto_mode = False
+        self.start_scenario()
+
+    def toggle_auto_mode(self):
+        """자동 버튼 클릭 시"""
+        if not self.is_auto_mode:
+            # OFF -> ON
+            self.is_auto_mode = True
+            self.btn_auto.setText("⏹ 자동 정지 (현재 사이클 후)")
+            self.btn_auto.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #F44336; color: white;")
+            self.btn_send.setEnabled(False) # 수동 버튼 잠금
+            self.log(">>> 자동 반복 모드를 시작합니다.")
+            self.start_scenario()
+        else:
+            # ON -> OFF
+            self.is_auto_mode = False
+            self.btn_auto.setText("종료 중...")
+            self.btn_auto.setEnabled(False) # 중복 클릭 방지
+            self.log(">>> 자동 반복 종료 요청됨. 현재 사이클이 끝나면 멈춥니다.")
+
     def start_scenario(self):
-        # 1. UI 값 읽기
+        # 1. [수정] 대차 번호를 매번 랜덤으로 생성
+        rand_car_no = str(random.randint(100, 999))
+        self.edt_car_no.setText(rand_car_no)
+
+        # 2. UI 값 읽기 (현재 설정된 플래그 상태를 읽음)
         data = {
-            "car_no": self.edt_car_no.text(),
+            "car_no": rand_car_no,
             "stop_flag": self.bg_stop.checkedId(),
             # 1st
             "ws_1_r": self.cb_ws1_r.currentIndex(), "ws_1_p": self.cb_ws1_p.currentIndex(),
@@ -254,27 +303,43 @@ class SenderWindow(QMainWindow):
         }
 
         self.log("-" * 30)
-        self.log(f"시나리오 시작: 대차 {data['car_no']}")
+        mode_str = "[자동]" if self.is_auto_mode else "[수동]"
+        self.log(f"{mode_str} 시나리오 시작: 대차 {data['car_no']}")
 
-        # 2. 버튼 비활성화 (중복 방지)
-        self.btn_send.setEnabled(False)
-        self.btn_send.setText("전송 중... (기다려주세요)")
-        self.btn_send.setStyleSheet("background-color: gray; color: white;")
+        # 3. 버튼 비활성화 (수동 모드일 때만 비주얼 처리, 자동일 땐 btn_auto가 제어함)
+        if not self.is_auto_mode:
+            self.btn_send.setEnabled(False)
+            self.btn_send.setText("전송 중...")
+            self.btn_send.setStyleSheet("background-color: gray; color: white;")
 
-        # 3. 워커 스레드 시작
+        # 4. 워커 스레드 시작
         self.worker = ScenarioWorker(self.sock, data)
         self.worker.log_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.start()
 
     def on_finished(self):
-        self.log("시나리오 완료.")
-        self.btn_send.setEnabled(True)
-        self.btn_send.setText("▶ 시나리오 시작 (5초 소요)")
-        self.btn_send.setStyleSheet("font-size: 16px; font-weight: bold; background-color: #4CAF50; color: white;")
+        """하나의 시나리오(5초)가 끝났을 때 호출됨"""
+        self.log("시나리오 1회 완료.")
+        
+        if self.is_auto_mode:
+            # 자동 모드면 바로 다시 시작 (재귀 호출 느낌이지만 스레드는 새로 생성됨)
+            # 약간의 텀을 주지 않고 바로 시작하거나, 필요하면 QTimer.singleShot으로 지연 가능
+            self.start_scenario()
+        else:
+            # 수동 모드 복귀 혹은 자동 종료 후 복귀
+            self.btn_send.setEnabled(True)
+            self.btn_send.setText("▶ 수동 1회 시작")
+            self.btn_send.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #2196F3; color: white;")
+            
+            # 자동 버튼 상태 원복
+            self.btn_auto.setEnabled(True)
+            self.btn_auto.setText("🔄 자동 반복 시작")
+            self.btn_auto.setStyleSheet("font-size: 14px; font-weight: bold; background-color: #4CAF50; color: white;")
 
     def closeEvent(self, event):
         try:
+            self.is_auto_mode = False # 종료 시 루프 끊기
             self.sock.close()
             self.ctx.term()
         except:
